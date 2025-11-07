@@ -1,0 +1,7 @@
+// TODO: Implement message types for dissemination layer
+// These will likely be similar to many of the existing consensus messages, but we want distinct names
+// to separate regular pirate ship from dag pirate ship
+
+syntax = "proto3";
+package proto.dissemination;
+import "execution.proto";

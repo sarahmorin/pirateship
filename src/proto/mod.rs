@@ -16,3 +16,6 @@ pub mod checkpoint {
 pub mod execution {
     include!(concat!(env!("OUT_DIR"), "/proto.execution.rs"));
 }
+pub mod dissemination {
+    include!(concat!(env!("OUT_DIR"), "/proto.dissemination.rs"));
+}
