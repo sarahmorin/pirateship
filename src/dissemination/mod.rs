@@ -57,7 +57,7 @@ use crate::{
 };
 
 /// The context shared by all server handlers.
-pub struct ConsensusServerContext {
+pub struct DisseminationServerContext {
     config: AtomicConfig,
     keystore: AtomicKeyStore,
     batch_proposal_tx: Sender<TxWithAckChanTag>,
@@ -69,9 +69,9 @@ pub struct ConsensusServerContext {
 }
 
 #[derive(Clone)]
-pub struct PinnedConsensusServerContext(pub Arc<Pin<Box<ConsensusServerContext>>>);
+pub struct PinnedDisseminationServerContext(pub Arc<Pin<Box<DisseminationServerContext>>>);
 
-impl PinnedConsensusServerContext {
+impl PinnedDisseminationServerContext {
     pub fn new(
         config: AtomicConfig,
         keystore: AtomicKeyStore,
@@ -82,7 +82,7 @@ impl PinnedConsensusServerContext {
         view_change_receiver_tx: Sender<(ProtoViewChange, SenderType)>,
         backfill_request_tx: Sender<ProtoBackfillNack>,
     ) -> Self {
-        Self(Arc::new(Box::pin(ConsensusServerContext {
+        Self(Arc::new(Box::pin(DisseminationServerContext {
             config,
             keystore,
             batch_proposal_tx,
@@ -95,15 +95,15 @@ impl PinnedConsensusServerContext {
     }
 }
 
-impl Deref for PinnedConsensusServerContext {
-    type Target = ConsensusServerContext;
+impl Deref for PinnedDisseminationServerContext {
+    type Target = DisseminationServerContext;
 
     fn deref(&self) -> &Self::Target {
         &self.0
     }
 }
 
-impl ServerContextType for PinnedConsensusServerContext {
+impl ServerContextType for PinnedDisseminationServerContext {
     fn get_server_keys(&self) -> std::sync::Arc<Box<crate::crypto::KeyStore>> {
         self.keystore.get()
     }
@@ -195,12 +195,12 @@ impl ServerContextType for PinnedConsensusServerContext {
     }
 }
 
-/// The main consensus node struct that holds all components.
-pub struct ConsensusNode<E: AppEngine + Send + Sync + 'static> {
+/// The main dissemination node struct that holds all components.
+pub struct DisseminationNode<E: AppEngine + Send + Sync + 'static> {
     config: AtomicConfig,
     keystore: AtomicKeyStore,
 
-    server: Arc<Server<PinnedConsensusServerContext>>,
+    server: Arc<Server<PinnedDisseminationServerContext>>,
     storage: Arc<Mutex<StorageService<RocksDBStorageEngine>>>,
     crypto: CryptoService,
 
@@ -226,7 +226,7 @@ pub struct ConsensusNode<E: AppEngine + Send + Sync + 'static> {
     pub batch_proposer_tx: Sender<TxWithAckChanTag>,
 }
 
-impl<E: AppEngine + Send + Sync> ConsensusNode<E> {
+impl<E: AppEngine + Send + Sync> DisseminationNode<E> {
     pub fn new(config: Config) -> Self {
         let (batch_proposer_tx, batch_proposer_rx) =
             make_channel(config.rpc_config.channel_depth as usize);
@@ -320,7 +320,7 @@ impl<E: AppEngine + Send + Sync> ConsensusNode<E> {
         #[cfg(feature = "extra_2pc")]
         let (extra_2pc_staging_tx, extra_2pc_staging_rx) = make_channel(10 * _chan_depth);
 
-        let ctx = PinnedConsensusServerContext::new(
+        let ctx = PinnedDisseminationServerContext::new(
             config.clone(),
             keystore.clone(),
             batch_proposer_tx.clone(),
@@ -479,7 +479,7 @@ impl<E: AppEngine + Send + Sync> ConsensusNode<E> {
         });
 
         handles.spawn(async move {
-            let _ = Server::<PinnedConsensusServerContext>::run(server).await;
+            let _ = Server::<PinnedDisseminationServerContext>::run(server).await;
         });
 
         handles.spawn(async move {
