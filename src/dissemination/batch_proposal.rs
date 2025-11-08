@@ -53,8 +53,8 @@ pub struct BatchProposer {
     perf_counter: RefCell<PerfCounter<usize>>,
 
     // NOTE: Can probably eliminate these two
-    make_new_batches: bool,
-    current_leader: String,
+    // make_new_batches: bool,
+    // current_leader: String,
 
     // cmd_rx: Receiver<BatchProposerCommand>, // NOTE: Can probably eliminate this
 
@@ -93,18 +93,11 @@ impl BatchProposer {
             reply_tx,
             unlogged_tx,
             perf_counter,
-            make_new_batches: false,
-            current_leader: String::new(),
+            // make_new_batches: false,
+            // current_leader: String::new(),
             // cmd_rx,
             last_batch_proposed: Instant::now(),
         };
-
-        #[cfg(not(feature = "view_change"))]
-        {
-            let leader = ret.config.get().consensus_config.get_leader_for_view(1);
-            ret.make_new_batches = leader == ret.config.get().net_config.name;
-            ret.current_leader = leader;
-        }
 
         ret
     }
@@ -222,10 +215,10 @@ impl BatchProposer {
         if new_tx.is_some() {
             // Note, I think we can simply eliminate this
             // If I am not the leader, reply to the client with the current leader info
-            if !self.i_am_leader() {
-                self.reply_leader(new_tx.unwrap()).await;
-                return Ok(());
-            }
+            // if !self.i_am_leader() {
+            //     self.reply_leader(new_tx.unwrap()).await;
+            //     return Ok(());
+            // }
 
             self.perf_register_random(work_counter);
 
@@ -251,9 +244,7 @@ impl BatchProposer {
         // or the batch timer has ticked
         // Await response from block maker
         // TODO: Make sure this await is only for u+1 acks
-        if self.current_raw_batch.as_ref().unwrap().len() >= max_batch_size
-            || (self.make_new_batches && batch_timer_tick)
-        {
+        if self.current_raw_batch.as_ref().unwrap().len() >= max_batch_size || (batch_timer_tick) {
             self.propose_new_batch().await;
         }
 
@@ -266,29 +257,29 @@ impl BatchProposer {
 
     /// Reply to the client with the current leader info
     // NOTE: Can probably eliminate this for dissemination
-    async fn reply_leader(&mut self, new_tx: TxWithAckChanTag) {
-        // TODO
-        let (ack_chan, client_tag, _) = new_tx.1;
-        let node_infos = NodeInfo {
-            nodes: self.config.get().net_config.nodes.clone(),
-        };
-        let reply = ProtoClientReply {
-            reply: Some(crate::proto::client::proto_client_reply::Reply::Leader(
-                ProtoCurrentLeader {
-                    name: self.current_leader.clone(),
-                    serialized_node_infos: node_infos.serialize(),
-                },
-            )),
-            client_tag,
-        };
+    // async fn reply_leader(&mut self, new_tx: TxWithAckChanTag) {
+    //     // TODO
+    //     let (ack_chan, client_tag, _) = new_tx.1;
+    //     let node_infos = NodeInfo {
+    //         nodes: self.config.get().net_config.nodes.clone(),
+    //     };
+    //     let reply = ProtoClientReply {
+    //         reply: Some(crate::proto::client::proto_client_reply::Reply::Leader(
+    //             ProtoCurrentLeader {
+    //                 name: self.current_leader.clone(),
+    //                 serialized_node_infos: node_infos.serialize(),
+    //             },
+    //         )),
+    //         client_tag,
+    //     };
 
-        let reply_ser = reply.encode_to_vec();
-        let _sz = reply_ser.len();
-        let reply_msg = PinnedMessage::from(reply_ser, _sz, crate::rpc::SenderType::Anon);
-        let latency_profile = LatencyProfile::new();
+    //     let reply_ser = reply.encode_to_vec();
+    //     let _sz = reply_ser.len();
+    //     let reply_msg = PinnedMessage::from(reply_ser, _sz, crate::rpc::SenderType::Anon);
+    //     let latency_profile = LatencyProfile::new();
 
-        let _ = ack_chan.send((reply_msg, latency_profile)).await;
-    }
+    //     let _ = ack_chan.send((reply_msg, latency_profile)).await;
+    // }
 
     /// Propose the current batch to the block maker
     async fn propose_new_batch(&mut self) {
@@ -305,9 +296,9 @@ impl BatchProposer {
 
     // Determine if I am the current leader
     // NOTE: Can probably eliminate this for dissemination
-    fn i_am_leader(&self) -> bool {
-        self.config.get().net_config.name == self.current_leader
-    }
+    // fn i_am_leader(&self) -> bool {
+    //     self.config.get().net_config.name == self.current_leader
+    // }
 
     /// None implies don't process the transaction forward!
     /// Either the transaction is malformed or it is a read-only transaction.
