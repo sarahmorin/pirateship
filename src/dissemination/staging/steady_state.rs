@@ -545,7 +545,7 @@ impl Staging {
 
         self.perf_register_block(&block);
         self.logserver_tx
-            .send(LogServerCommand::NewBlock(block.clone()))
+            .send(LogServerCommand::NewBlock(block.clone(), ae_stats.sender.clone()))
             .await
             .unwrap();
         self.__ae_seen_in_this_view += if this_is_final_block { 1 } else { 0 };
@@ -695,7 +695,7 @@ impl Staging {
         }
 
         self.logserver_tx
-            .send(LogServerCommand::NewBlock(block.clone()))
+            .send(LogServerCommand::NewBlock(block.clone(), ae_stats.sender.clone()))
             .await
             .unwrap();
         self.__ae_seen_in_this_view += if this_is_final_block { 1 } else { 0 };

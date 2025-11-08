@@ -94,7 +94,7 @@ pub enum LogServerQuery {
 }
 
 pub enum LogServerCommand {
-    NewBlock(CachedBlock),
+    NewBlock(CachedBlock, String /* sender_name */),
     Rollback(u64),
     UpdateBCI(u64),
 }
@@ -111,7 +111,9 @@ pub struct LogServer {
     query_rx: Receiver<LogServerQuery>,
 
     storage: StorageServiceConnector,
-    log: VecDeque<CachedBlock>,
+    /// Each node maintains n hash chains (lanes), one for each node in the system.
+    /// The index corresponds to the node's position in the node_list.
+    lanes: Vec<VecDeque<CachedBlock>>,
 
     /// LFU read cache for GCed blocks.
     read_cache: ReadCache,
@@ -129,6 +131,10 @@ impl LogServer {
         query_rx: Receiver<LogServerQuery>,
         storage: StorageServiceConnector,
     ) -> Self {
+        // Initialize n lanes, one for each node in the system
+        let num_nodes = config.get().consensus_config.node_list.len();
+        let lanes = (0..num_nodes).map(|_| VecDeque::new()).collect::<Vec<_>>();
+
         LogServer {
             config,
             client,
@@ -137,7 +143,7 @@ impl LogServer {
             gc_rx,
             query_rx,
             storage,
-            log: VecDeque::new(),
+            lanes,
             read_cache: ReadCache::new(LOGSERVER_READ_CACHE_WSS),
             bci: 0,
         }
@@ -157,9 +163,9 @@ impl LogServer {
             biased;
             cmd = self.logserver_rx.recv() => {
                 match cmd {
-                    Some(LogServerCommand::NewBlock(block)) => {
-                        trace!("Received block {}", block.block.n);
-                        self.handle_new_block(block).await;
+                    Some(LogServerCommand::NewBlock(block, sender_name)) => {
+                        trace!("Received block {} from {}", block.block.n, sender_name);
+                        self.handle_new_block(block, sender_name).await;
                     },
                     Some(LogServerCommand::Rollback(n)) => {
                         trace!("Rolling back to block {}", n);
@@ -178,7 +184,10 @@ impl LogServer {
 
             gc_req = self.gc_rx.recv() => {
                 if let Some(gc_req) = gc_req {
-                    self.log.retain(|block| block.block.n > gc_req);
+                    // GC all lanes up to gc_req
+                    for lane in self.lanes.iter_mut() {
+                        lane.retain(|block| block.block.n > gc_req);
+                    }
                 }
             },
 
@@ -198,25 +207,56 @@ impl LogServer {
         Ok(())
     }
 
+    /// Get the lane index for a given sender name.
+    /// Returns None if the sender is not in the node list.
+    // HACK: This is gross, fix it later
+    fn get_lane_index(&self, sender_name: &str) -> Option<usize> {
+        let config = self.config.get();
+        config
+            .consensus_config
+            .node_list
+            .iter()
+            .position(|name| name == sender_name)
+    }
+
+    /// Get a block by sequence number from a specific lane.
+    /// TODO: For dissemination, we may want to search specific lanes or all lanes depending on context.
+    /// For now, this searches the first lane (typically the node's own lane or leader's lane).
     async fn get_block(&mut self, n: u64) -> Option<CachedBlock> {
-        let last_n = self.log.back()?.block.n;
+        self.get_block_from_lane(n, 0).await
+    }
+
+    /// Get a block by sequence number from a specific lane.
+    async fn get_block_from_lane(&mut self, n: u64, lane_idx: usize) -> Option<CachedBlock> {
+        if lane_idx >= self.lanes.len() {
+            return None;
+        }
+
+        let lane = &self.lanes[lane_idx];
+        let last_n = lane.back()?.block.n;
         if n == 0 || n > last_n {
             return None;
         }
 
-        let first_n = self.log.front()?.block.n;
+        let first_n = lane.front()?.block.n;
         if n < first_n {
-            return self.get_gced_block(n).await;
+            return self.get_gced_block_from_lane(n, lane_idx).await;
         }
 
-        let block_idx = self.log.binary_search_by(|e| e.block.n.cmp(&n)).ok()?;
-        let block = self.log[block_idx].clone();
+        let block_idx = lane.binary_search_by(|e| e.block.n.cmp(&n)).ok()?;
+        let block = lane[block_idx].clone();
 
         Some(block)
     }
 
-    async fn get_gced_block(&mut self, n: u64) -> Option<CachedBlock> {
-        let first_n = self.log.front()?.block.n;
+    /// Get a GCed block from a specific lane using the read cache and storage.
+    async fn get_gced_block_from_lane(&mut self, n: u64, lane_idx: usize) -> Option<CachedBlock> {
+        if lane_idx >= self.lanes.len() {
+            return None;
+        }
+
+        let lane = &self.lanes[lane_idx];
+        let first_n = lane.front()?.block.n;
         if n >= first_n {
             return None; // The block is not GCed.
         }
@@ -228,8 +268,8 @@ impl LogServer {
             }
             Err(Some(block)) => block,
             Err(None) => {
-                // Get the first block in the log.
-                self.log.front()?.clone()
+                // Get the first block in the lane.
+                lane.front()?.clone()
             }
         };
 
@@ -277,10 +317,14 @@ impl LogServer {
 
         let last_n = match existing_fork.serialized_blocks.last() {
             Some(block) => block.n,
-            None => match self.log.back() {
-                Some(block) => block.block.n,
-                None => 0,
-            },
+            None => {
+                // TODO: For dissemination, determine which lane to use for backfill
+                // For now, use the first lane (leader's lane)
+                match self.lanes.get(0).and_then(|lane| lane.back()) {
+                    Some(block) => block.block.n,
+                    None => 0,
+                }
+            }
         };
 
         let first_n = backfill_req.last_index_needed;
@@ -380,10 +424,16 @@ impl LogServer {
                 let block = match self.get_block(n).await {
                     Some(block) => block,
                     None => {
+                        // TODO: For dissemination, determine which lane to query
+                        // For now, report last_n from the first lane (leader's lane)
+                        let last_n_seen = self
+                            .lanes
+                            .get(0)
+                            .and_then(|lane| lane.back())
+                            .map_or(0, |block| block.block.n);
                         error!(
-                            "Block {} not found, last_n seen: {}",
-                            n,
-                            self.log.back().map_or(0, |block| block.block.n)
+                            "Block {} not found, last_n seen in lane 0: {}",
+                            n, last_n_seen
                         );
                         sender.send(false).await.unwrap();
                         return;
@@ -403,7 +453,13 @@ impl LogServer {
 
                 let mut hints = Vec::new();
 
-                let last_n = self.log.back().map_or(0, |block| block.block.n);
+                // TODO: For dissemination, determine which lane to use for hints
+                // For now, use the first lane (leader's lane)
+                let last_n = self
+                    .lanes
+                    .get(0)
+                    .and_then(|lane| lane.back())
+                    .map_or(0, |block| block.block.n);
                 let mut curr_n = last_needed_n;
                 let mut curr_jump = JUMP_START;
                 let mut curr_jump_used_for = 0;
@@ -455,23 +511,35 @@ impl LogServer {
         }
     }
 
-    /// Invariant: Log is continuous, increasing seq num and maintains hash chain continuity
-    async fn handle_new_block(&mut self, block: CachedBlock) {
-        let last_n = self.log.back().map_or(0, |block| block.block.n);
+    /// Invariant: Each lane (hash chain) is continuous with increasing seq num and maintains hash chain continuity
+    async fn handle_new_block(&mut self, block: CachedBlock, sender_name: String) {
+        let lane_idx = match self.get_lane_index(&sender_name) {
+            Some(idx) => idx,
+            None => {
+                error!("Sender {} not in node list", sender_name);
+                return;
+            }
+        };
+
+        let lane = &mut self.lanes[lane_idx];
+        let last_n = lane.back().map_or(0, |block| block.block.n);
         if block.block.n != last_n + 1 {
             error!(
-                "Block {} is not the next block, last_n: {}",
-                block.block.n, last_n
+                "Block {} from {} is not the next block, last_n: {}",
+                block.block.n, sender_name, last_n
             );
             return;
         }
 
-        if last_n > 0 && !block.block.parent.eq(&self.log.back().unwrap().block_hash) {
-            error!("Parent hash mismatch for block {}", block.block.n);
+        if last_n > 0 && !block.block.parent.eq(&lane.back().unwrap().block_hash) {
+            error!(
+                "Parent hash mismatch for block {} from {}",
+                block.block.n, sender_name
+            );
             return;
         }
 
-        self.log.push_back(block);
+        lane.push_back(block);
     }
 
     async fn handle_rollback(&mut self, mut n: u64) {
@@ -479,7 +547,10 @@ impl LogServer {
             n = self.bci + 1;
         }
 
-        self.log.retain(|block| block.block.n <= n);
+        // Rollback all lanes to block n or earlier
+        for lane in self.lanes.iter_mut() {
+            lane.retain(|block| block.block.n <= n);
+        }
 
         // Clean up read cache.
         self.read_cache.cache.retain(|k, _| *k <= n);
