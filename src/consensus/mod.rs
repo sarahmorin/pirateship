@@ -1,9 +1,7 @@
-pub mod app;
 pub mod batch_proposal;
 mod block_broadcaster;
 mod block_sequencer;
 pub mod client_reply;
-pub mod engines;
 pub mod extra_2pc;
 pub mod fork_receiver;
 mod logserver;
@@ -21,6 +19,7 @@ use std::{
 };
 
 use crate::{
+    app::{AppEngine, Application},
     proto::{
         checkpoint::ProtoBackfillNack,
         consensus::{ProtoAppendEntries, ProtoViewChange},
@@ -31,7 +30,6 @@ use crate::{
         RocksDBStorageEngine, StorageService,
     },
 };
-use app::{AppEngine, Application};
 use batch_proposal::{BatchProposer, TxWithAckChanTag};
 use block_broadcaster::BlockBroadcaster;
 use block_sequencer::BlockSequencer;

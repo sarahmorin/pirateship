@@ -7,6 +7,7 @@ use std::collections::{HashMap, HashSet};
 use tokio::{sync::oneshot, task::spawn_local};
 
 use crate::{
+    app::AppCommand,
     consensus::{
         extra_2pc::{EngraftActionAfterFutureDone, EngraftTwoPCFuture, TwoPCCommand},
         logserver::LogServerCommand,
@@ -26,7 +27,6 @@ use crate::{
 
 use super::{
     super::{
-        app::AppCommand,
         block_broadcaster::BlockBroadcasterCommand,
         block_sequencer::BlockSequencerControlCommand,
         client_reply::ClientReplyCommand,

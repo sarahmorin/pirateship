@@ -16,11 +16,10 @@ use std::io::ErrorKind;
 use tokio::sync::{oneshot, Mutex};
 
 use crate::{
-    config::AtomicConfig, proto::execution::ProtoTransaction, rpc::server::MsgAckChan,
-    utils::timer::ResettableTimer,
+    app::AppCommand, config::AtomicConfig, proto::execution::ProtoTransaction,
+    rpc::server::MsgAckChan, utils::timer::ResettableTimer,
 };
 
-use super::app::AppCommand;
 use super::client_reply::ClientReplyCommand;
 
 pub type RawBatch = Vec<ProtoTransaction>;

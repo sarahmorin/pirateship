@@ -180,7 +180,7 @@ impl Staging {
             self.ci = retain_n;
             // Signal rollback.
             self.app_tx
-                .send(crate::consensus::app::AppCommand::Rollback(self.ci))
+                .send(crate::app::AppCommand::Rollback(self.ci))
                 .await
                 .unwrap();
         }
