@@ -7,12 +7,12 @@ use std::collections::{HashMap, HashSet};
 use tokio::{sync::oneshot, task::spawn_local};
 
 use crate::{
-    consensus::{
+    crypto::{CachedBlock, DIGEST_LENGTH},
+    dissemination::{
         extra_2pc::{EngraftActionAfterFutureDone, EngraftTwoPCFuture, TwoPCCommand},
         logserver::LogServerCommand,
         pacemaker::PacemakerCommand,
     },
-    crypto::{CachedBlock, DIGEST_LENGTH},
     proto::{
         consensus::{
             proto_block::Sig, ProtoNameWithSignature, ProtoQuorumCertificate,
@@ -24,9 +24,9 @@ use crate::{
     utils::StorageAck,
 };
 
+// FIXME: Using crate::app but this creates dependency on consensus types
 use super::{
     super::{
-        app::AppCommand,
         block_broadcaster::BlockBroadcasterCommand,
         block_sequencer::BlockSequencerControlCommand,
         client_reply::ClientReplyCommand,
@@ -34,6 +34,7 @@ use super::{
     },
     CachedBlockWithVotes, Staging,
 };
+use crate::app::AppCommand;
 
 impl Staging {
     pub(super) fn i_am_leader(&self) -> bool {
@@ -545,7 +546,10 @@ impl Staging {
 
         self.perf_register_block(&block);
         self.logserver_tx
-            .send(LogServerCommand::NewBlock(block.clone(), ae_stats.sender.clone()))
+            .send(LogServerCommand::NewBlock(
+                block.clone(),
+                ae_stats.sender.clone(),
+            ))
             .await
             .unwrap();
         self.__ae_seen_in_this_view += if this_is_final_block { 1 } else { 0 };
@@ -695,7 +699,10 @@ impl Staging {
         }
 
         self.logserver_tx
-            .send(LogServerCommand::NewBlock(block.clone(), ae_stats.sender.clone()))
+            .send(LogServerCommand::NewBlock(
+                block.clone(),
+                ae_stats.sender.clone(),
+            ))
             .await
             .unwrap();
         self.__ae_seen_in_this_view += if this_is_final_block { 1 } else { 0 };

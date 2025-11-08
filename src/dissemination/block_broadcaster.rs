@@ -10,6 +10,7 @@ use rustls::crypto;
 use tokio::sync::{oneshot, Mutex};
 
 use crate::{
+    app::AppCommand,
     config::AtomicConfig,
     crypto::{AtomicKeyStore, CachedBlock, CryptoServiceConnector, FutureHash, HashType},
     proto::{
@@ -28,10 +29,7 @@ use crate::{
     },
 };
 
-use super::{
-    app::AppCommand,
-    fork_receiver::{AppendEntriesStats, ForkReceiverCommand, MultipartFork},
-};
+use super::fork_receiver::{AppendEntriesStats, ForkReceiverCommand, MultipartFork};
 
 pub enum BlockBroadcasterCommand {
     UpdateCI(u64),

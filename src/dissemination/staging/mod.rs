@@ -12,6 +12,7 @@ use log::{debug, error, info, trace, warn};
 use tokio::sync::{mpsc::UnboundedSender, oneshot, Mutex};
 
 use crate::{
+    app::AppCommand,
     config::AtomicConfig,
     crypto::{CachedBlock, CryptoServiceConnector},
     proto::consensus::{ProtoQuorumCertificate, ProtoSignatureArrayEntry, ProtoVote},
@@ -24,7 +25,6 @@ use crate::{
 };
 
 use super::{
-    app::AppCommand,
     batch_proposal::BatchProposerCommand,
     block_broadcaster::BlockBroadcasterCommand,
     block_sequencer::BlockSequencerControlCommand,

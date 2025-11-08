@@ -22,8 +22,7 @@ use crate::{
     utils::timer::ResettableTimer,
 };
 
-use super::app::AppCommand;
-use super::client_reply::ClientReplyCommand;
+use crate::app::{client_reply::ClientReplyCommand, AppCommand};
 
 pub type RawBatch = Vec<ProtoTransaction>;
 

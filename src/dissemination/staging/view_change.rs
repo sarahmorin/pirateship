@@ -7,12 +7,12 @@ use log::{error, info, trace, warn};
 use prost::Message as _;
 
 use crate::{
-    consensus::{
+    crypto::{default_hash, CachedBlock, HashType},
+    dissemination::{
         block_broadcaster::BlockBroadcasterCommand, block_sequencer::BlockSequencerControlCommand,
         client_reply::ClientReplyCommand, fork_receiver::ForkReceiverCommand,
         pacemaker::PacemakerCommand,
     },
-    crypto::{default_hash, CachedBlock, HashType},
     proto::{
         consensus::{
             HalfSerializedBlock, ProtoFork, ProtoForkValidation, ProtoQuorumCertificate,
@@ -179,8 +179,9 @@ impl Staging {
         if self.ci > retain_n {
             self.ci = retain_n;
             // Signal rollback.
+            // FIXME: Using consensus AppCommand - needs dissemination version
             self.app_tx
-                .send(crate::consensus::app::AppCommand::Rollback(self.ci))
+                .send(crate::app::AppCommand::Rollback(self.ci))
                 .await
                 .unwrap();
         }
