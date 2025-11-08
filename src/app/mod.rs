@@ -30,7 +30,6 @@ use crate::{
 
 use crate::utils::timer::ResettableTimer;
 
-pub mod client_reply;
 pub mod engines;
 
 use client_reply::ClientReplyCommand;
