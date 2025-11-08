@@ -7,7 +7,7 @@ use tokio::sync::{oneshot, Mutex};
 
 use crate::{
     config::AtomicConfig,
-    crypto::{default_hash, CachedBlock, CryptoServiceConnector, HashType},
+    crypto::{CachedBlock, CryptoServiceConnector},
     proto::{
         checkpoint::ProtoBackfillNack,
         consensus::{HalfSerializedBlock, ProtoAppendEntries},
@@ -21,7 +21,6 @@ use crate::{
 };
 
 use super::logserver::LogServerQuery;
-use futures::FutureExt;
 
 pub enum ForkReceiverCommand {
     UpdateView(u64 /* view num */, u64 /* config num */), // Also acts as a Ack for MultiPartFork
@@ -121,6 +120,7 @@ impl ForkReceiver {
         broadcaster_tx: Sender<MultipartFork>,
         logserver_query_tx: Sender<LogServerQuery>,
     ) -> Self {
+        #[allow(unused_mut)]
         let mut ret = Self {
             config,
             crypto,
@@ -311,7 +311,7 @@ impl ForkReceiver {
 
         let (multipart_fut, mut hash_receivers) = self
             .crypto
-            .prepare_fork(
+            .prepare_fork_dissemination(
                 first_part,
                 parts.len(),
                 AppendEntriesStats {
@@ -377,7 +377,7 @@ impl ForkReceiver {
                     if maybe_legit {
                         let (multipart_fut, mut hash_receivers) = self
                             .crypto
-                            .prepare_fork(
+                            .prepare_fork_dissemination(
                                 part,
                                 self.multipart_buffer.len(),
                                 ae_stats,

@@ -2,9 +2,9 @@
 // Licensed under the MIT License.
 
 use log::{debug, error, info, warn};
+use pft::app::engines::{kvs::KVSAppEngine, null_app::NullApp};
 use pft::config::{self, Config};
 use pft::consensus;
-use pft::consensus::engines::{kvs::KVSAppEngine, null_app::NullApp};
 use std::io::Write;
 use std::process::exit;
 use std::{

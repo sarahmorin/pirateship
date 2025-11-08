@@ -25,6 +25,10 @@ use crate::{
     config::AtomicConfig,
     consensus::fork_receiver::{AppendEntriesStats, MultipartFork},
     crypto::{default_hash, DIGEST_LENGTH},
+    dissemination::fork_receiver::{
+        AppendEntriesStats as DisseminationAppendEntriesStats,
+        MultipartFork as DisseminationMultipartFork,
+    },
     proto::consensus::{HalfSerializedBlock, ProtoBlock, ProtoQuorumCertificate, ProtoViewChange},
     utils::{
         deserialize_proto_block, serialize_proto_block_nascent,
@@ -706,6 +710,41 @@ impl CryptoServiceConnector {
         }
         (
             MultipartFork {
+                fork_future,
+                remaining_parts,
+                ae_stats,
+            },
+            hash_receivers,
+        )
+    }
+
+    pub async fn prepare_fork_dissemination(
+        &mut self,
+        mut part: Vec<HalfSerializedBlock>,
+        remaining_parts: usize,
+        ae_stats: DisseminationAppendEntriesStats,
+        min_qc_len: usize,
+    ) -> (
+        DisseminationMultipartFork,
+        Vec<oneshot::Receiver<Result<HashType, Error>>>,
+    ) {
+        let mut fork_future = Vec::with_capacity(part.len());
+        let mut hash_receivers = Vec::new();
+        for e in part.drain(..) {
+            let (tx, rx) = oneshot::channel();
+            let (tx2, rx2) = oneshot::channel();
+            self.dispatch(CryptoServiceCommand::VerifyBlockSer(
+                min_qc_len,
+                e.serialized_body,
+                tx,
+                tx2,
+            ))
+            .await;
+            fork_future.push(Some(rx));
+            hash_receivers.push(rx2);
+        }
+        (
+            DisseminationMultipartFork {
                 fork_future,
                 remaining_parts,
                 ae_stats,
