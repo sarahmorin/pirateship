@@ -12,6 +12,7 @@ pub mod proto;
 
 pub mod client;
 pub mod dissemination;
+pub mod app;
 
 #[macro_export]
 macro_rules! get_tx_list {

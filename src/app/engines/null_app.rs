@@ -1,7 +1,7 @@
 use serde::{Deserialize, Serialize};
 
 use crate::{
-    consensus::app::AppEngine,
+    app::AppEngine,
     proto::{
         client::ProtoByzResponse,
         execution::{ProtoTransactionOpResult, ProtoTransactionPhase, ProtoTransactionResult},

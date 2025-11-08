@@ -6,7 +6,7 @@ use std::fmt::Display;
 use log::{error, info, trace, warn};
 use serde::{Deserialize, Serialize};
 
-use crate::{config::AtomicConfig, consensus::app::AppEngine};
+use crate::{config::AtomicConfig, app::AppEngine};
 
 use crate::proto::execution::{
     ProtoTransaction, ProtoTransactionOp, ProtoTransactionOpResult, ProtoTransactionOpType,
