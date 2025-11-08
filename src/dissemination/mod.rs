@@ -277,7 +277,7 @@ impl<E: AppEngine + Send + Sync> DisseminationNode<E> {
         let extra_2pc_client = Client::new_atomic(config.clone(), keystore.clone(), true, 50);
 
         // let (batch_proposer_tx, batch_proposer_rx) = make_channel(_chan_depth);
-        let (batch_proposer_command_tx, batch_proposer_command_rx) = make_channel(_chan_depth);
+        // let (batch_proposer_command_tx, batch_proposer_command_rx) = make_channel(_chan_depth);
 
         let (block_maker_tx, block_maker_rx) = make_channel(_chan_depth);
         let (control_command_tx, control_command_rx) = make_channel(_chan_depth);

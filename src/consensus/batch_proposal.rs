@@ -16,15 +16,13 @@ use std::io::ErrorKind;
 use tokio::sync::{oneshot, Mutex};
 
 use crate::{
-    app::AppCommand,
+    app::ClientReplyCommand,
     config::AtomicConfig,
     proto::execution::ProtoTransaction,
     rpc::server::MsgAckChan,
     utils::batch::{MsgAckChanWithTag, RawBatch, TxWithAckChanTag},
     utils::timer::ResettableTimer,
 };
-
-use super::client_reply::ClientReplyCommand;
 
 pub type BatchProposerCommand = (
     bool,   /* true == make new batches, false == stop making new batches */

@@ -25,14 +25,15 @@ use crate::{
     },
 };
 
-pub enum ClientReplyCommand {
-    CancelAllRequests,
-    StopCancelling,
-    CrashCommitAck(HashMap<HashType, (u64, Vec<ProtoTransactionResult>)>),
-    ByzCommitAck(HashMap<HashType, (u64, Vec<ProtoByzResponse>)>),
-    UnloggedRequestAck(oneshot::Receiver<ProtoTransactionResult>, MsgAckChanWithTag),
-    ProbeRequestAck(u64 /* block_n */, MsgAckChanWithTag),
-}
+use crate::app::ClientReplyCommand;
+// pub enum ClientReplyCommand {
+//     CancelAllRequests,
+//     StopCancelling,
+//     CrashCommitAck(HashMap<HashType, (u64, Vec<ProtoTransactionResult>)>),
+//     ByzCommitAck(HashMap<HashType, (u64, Vec<ProtoByzResponse>)>),
+//     UnloggedRequestAck(oneshot::Receiver<ProtoTransactionResult>, MsgAckChanWithTag),
+//     ProbeRequestAck(u64 /* block_n */, MsgAckChanWithTag),
+// }
 
 enum ReplyProcessorCommand {
     CrashCommit(

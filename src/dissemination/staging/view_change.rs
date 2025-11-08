@@ -7,11 +7,11 @@ use log::{error, info, trace, warn};
 use prost::Message as _;
 
 use crate::{
+    app::ClientReplyCommand,
     crypto::{default_hash, CachedBlock, HashType},
     dissemination::{
         block_broadcaster::BlockBroadcasterCommand, block_sequencer::BlockSequencerControlCommand,
-        client_reply::ClientReplyCommand, fork_receiver::ForkReceiverCommand,
-        pacemaker::PacemakerCommand,
+        fork_receiver::ForkReceiverCommand, pacemaker::PacemakerCommand,
     },
     proto::{
         consensus::{

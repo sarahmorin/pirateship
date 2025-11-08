@@ -18,14 +18,13 @@ use std::io::ErrorKind;
 use tokio::sync::{oneshot, Mutex};
 
 use crate::{
+    app::ClientReplyCommand,
     config::AtomicConfig,
     proto::execution::ProtoTransaction,
     rpc::server::MsgAckChan,
     utils::batch::{MsgAckChanWithTag, RawBatch, TxWithAckChanTag},
     utils::timer::ResettableTimer,
 };
-
-use super::client_reply::ClientReplyCommand;
 
 // For dissemination, all nodes are proposers and acceptors.
 // pub type BatchProposerCommand = (

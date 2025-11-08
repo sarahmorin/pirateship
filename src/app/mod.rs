@@ -23,6 +23,7 @@ use crate::{
         },
     },
     utils::{
+        batch::MsgAckChanWithTag,
         channel::{Receiver, Sender},
         PerfCounter,
     },
@@ -32,8 +33,14 @@ use crate::utils::timer::ResettableTimer;
 
 pub mod engines;
 
-use client_reply::ClientReplyCommand;
-
+pub enum ClientReplyCommand {
+    CancelAllRequests,
+    StopCancelling,
+    CrashCommitAck(HashMap<HashType, (u64, Vec<ProtoTransactionResult>)>),
+    ByzCommitAck(HashMap<HashType, (u64, Vec<ProtoByzResponse>)>),
+    UnloggedRequestAck(oneshot::Receiver<ProtoTransactionResult>, MsgAckChanWithTag),
+    ProbeRequestAck(u64 /* block_n */, MsgAckChanWithTag),
+}
 pub enum AppCommand {
     NewRequestBatch(
         u64,      /* block.n */
