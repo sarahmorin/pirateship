@@ -26,11 +26,12 @@ use crate::{
     },
     rpc::{client::Client, SenderType},
     utils::{
+        batch::TxWithAckChanTag,
         channel::{make_channel, Receiver, Sender},
         RocksDBStorageEngine, StorageService,
     },
 };
-use batch_proposal::{BatchProposer, TxWithAckChanTag};
+use batch_proposal::BatchProposer;
 use block_broadcaster::BlockBroadcaster;
 use block_sequencer::BlockSequencer;
 use client_reply::ClientReplyHandler;

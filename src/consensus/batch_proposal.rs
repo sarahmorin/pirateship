@@ -16,20 +16,15 @@ use std::io::ErrorKind;
 use tokio::sync::{oneshot, Mutex};
 
 use crate::{
-    app::AppCommand, config::AtomicConfig, proto::execution::ProtoTransaction,
-    rpc::server::MsgAckChan, utils::timer::ResettableTimer,
+    app::AppCommand,
+    config::AtomicConfig,
+    proto::execution::ProtoTransaction,
+    rpc::server::MsgAckChan,
+    utils::batch::{MsgAckChanWithTag, RawBatch, TxWithAckChanTag},
+    utils::timer::ResettableTimer,
 };
 
 use super::client_reply::ClientReplyCommand;
-
-pub type RawBatch = Vec<ProtoTransaction>;
-
-pub type MsgAckChanWithTag = (
-    MsgAckChan,
-    u64,        /* client tag */
-    SenderType, /* client name */
-);
-pub type TxWithAckChanTag = (Option<ProtoTransaction>, MsgAckChanWithTag);
 
 pub type BatchProposerCommand = (
     bool,   /* true == make new batches, false == stop making new batches */

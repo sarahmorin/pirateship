@@ -21,6 +21,8 @@ pub use perf::*;
 
 pub mod timer;
 
+pub mod batch;
+
 pub mod channel {
     mod channel_tokio {
         pub type Sender<T> = tokio::sync::mpsc::Sender<T>;

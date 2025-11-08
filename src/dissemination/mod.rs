@@ -26,11 +26,12 @@ use crate::{
     },
     rpc::{client::Client, SenderType},
     utils::{
+        batch::TxWithAckChanTag,
         channel::{make_channel, Receiver, Sender},
         RocksDBStorageEngine, StorageService,
     },
 };
-use batch_proposal::{BatchProposer, TxWithAckChanTag};
+use batch_proposal::BatchProposer;
 use block_broadcaster::BlockBroadcaster;
 use block_sequencer::BlockSequencer;
 use client_reply::ClientReplyHandler;
@@ -336,7 +337,7 @@ impl<E: AppEngine + Send + Sync> DisseminationNode<E> {
             block_maker_tx,
             client_reply_command_tx.clone(),
             unlogged_tx,
-            batch_proposer_command_rx,
+            // batch_proposer_command_rx,
         );
         let block_sequencer = BlockSequencer::new(
             config.clone(),
@@ -373,7 +374,7 @@ impl<E: AppEngine + Send + Sync> DisseminationNode<E> {
             control_command_tx,
             fork_receiver_command_tx,
             qc_tx,
-            batch_proposer_command_tx,
+            // batch_proposer_command_tx,
             logserver_tx,
             #[cfg(feature = "extra_2pc")]
             extra_2pc_command_tx,

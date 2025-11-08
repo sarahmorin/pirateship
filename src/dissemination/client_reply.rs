@@ -19,10 +19,11 @@ use crate::{
         rpc::ProtoPayload,
     },
     rpc::{server::LatencyProfile, PinnedMessage, SenderType},
-    utils::channel::{Receiver, Sender},
+    utils::{
+        batch::MsgAckChanWithTag,
+        channel::{Receiver, Sender},
+    },
 };
-
-use super::batch_proposal::MsgAckChanWithTag;
 
 pub enum ClientReplyCommand {
     CancelAllRequests,

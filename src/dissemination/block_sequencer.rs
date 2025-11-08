@@ -14,10 +14,9 @@ use crate::{
     proto::consensus::{
         DefferedSignature, ProtoBlock, ProtoForkValidation, ProtoQuorumCertificate,
     },
+    utils::batch::{MsgAckChanWithTag, RawBatch},
     utils::timer::ResettableTimer,
 };
-
-use super::batch_proposal::{MsgAckChanWithTag, RawBatch};
 
 // QUESTION: Do we care about view changes for dissemination? I feel like no.
 pub enum BlockSequencerControlCommand {

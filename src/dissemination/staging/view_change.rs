@@ -114,10 +114,10 @@ impl Staging {
             .get()
             .consensus_config
             .get_leader_for_view(self.view);
-        self.batch_proposer_command_tx
-            .send((false, current_leader))
-            .await
-            .unwrap();
+        // self.batch_proposer_command_tx
+        //     .send((false, current_leader))
+        //     .await
+        //     .unwrap();
         self.client_reply_tx
             .send(ClientReplyCommand::CancelAllRequests)
             .await
@@ -244,17 +244,17 @@ impl Staging {
             .get()
             .consensus_config
             .get_leader_for_view(self.view);
-        if self.i_am_leader() {
-            self.batch_proposer_command_tx
-                .send((true, current_leader))
-                .await
-                .unwrap();
-        } else {
-            self.batch_proposer_command_tx
-                .send((false, current_leader))
-                .await
-                .unwrap();
-        }
+        // if self.i_am_leader() {
+        //     self.batch_proposer_command_tx
+        //         .send((true, current_leader))
+        //         .await
+        //         .unwrap();
+        // } else {
+        //     self.batch_proposer_command_tx
+        //         .send((false, current_leader))
+        //         .await
+        //         .unwrap();
+        // }
 
         info!("View {} stabilized", self.view);
 

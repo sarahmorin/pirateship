@@ -14,10 +14,9 @@ use crate::{
     proto::consensus::{
         DefferedSignature, ProtoBlock, ProtoForkValidation, ProtoQuorumCertificate,
     },
+    utils::batch::{MsgAckChanWithTag, RawBatch},
     utils::timer::ResettableTimer,
 };
-
-use super::batch_proposal::{MsgAckChanWithTag, RawBatch};
 
 pub enum BlockSequencerControlCommand {
     NewUnstableView(u64 /* view num */, u64 /* config num */), // View changed to a new view, it is not stable, so don't propose new blocks.

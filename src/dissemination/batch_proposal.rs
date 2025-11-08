@@ -18,27 +18,20 @@ use std::io::ErrorKind;
 use tokio::sync::{oneshot, Mutex};
 
 use crate::{
-    config::AtomicConfig, proto::execution::ProtoTransaction, rpc::server::MsgAckChan,
+    config::AtomicConfig,
+    proto::execution::ProtoTransaction,
+    rpc::server::MsgAckChan,
+    utils::batch::{MsgAckChanWithTag, RawBatch, TxWithAckChanTag},
     utils::timer::ResettableTimer,
 };
 
 use super::client_reply::ClientReplyCommand;
 
-pub type RawBatch = Vec<ProtoTransaction>;
-
-pub type MsgAckChanWithTag = (
-    MsgAckChan,
-    u64,        /* client tag */
-    SenderType, /* client name */
-);
-pub type TxWithAckChanTag = (Option<ProtoTransaction>, MsgAckChanWithTag);
-
-// NOTE: I Think we can eliminate this because in the DAG layer all nodes should always be proposers and acceptors
-pub type BatchProposerCommand = (
-    bool,   /* true == make new batches, false == stop making new batches */
-    String, /* Current leader */
-);
-
+// For dissemination, all nodes are proposers and acceptors.
+// pub type BatchProposerCommand = (
+//     bool,   /* true == make new batches, false == stop making new batches */
+//     String, /* Current leader */
+// );
 pub struct BatchProposer {
     // Configuration
     config: AtomicConfig,
@@ -64,7 +57,7 @@ pub struct BatchProposer {
     make_new_batches: bool,
     current_leader: String,
 
-    cmd_rx: Receiver<BatchProposerCommand>, // NOTE: Can probably eliminate this
+    // cmd_rx: Receiver<BatchProposerCommand>, // NOTE: Can probably eliminate this
 
     // Monotonic timer to track last batch proposed time
     last_batch_proposed: Instant,
@@ -78,7 +71,7 @@ impl BatchProposer {
         block_maker_tx: Sender<(RawBatch, Vec<MsgAckChanWithTag>)>,
         reply_tx: Sender<ClientReplyCommand>,
         unlogged_tx: Sender<(ProtoTransaction, oneshot::Sender<ProtoTransactionResult>)>,
-        cmd_rx: Receiver<BatchProposerCommand>,
+        // cmd_rx: Receiver<BatchProposerCommand>,
     ) -> Self {
         let batch_timer = ResettableTimer::new(Duration::from_millis(
             config.get().consensus_config.batch_max_delay_ms,
@@ -103,7 +96,7 @@ impl BatchProposer {
             perf_counter,
             make_new_batches: false,
             current_leader: String::new(),
-            cmd_rx,
+            // cmd_rx,
             last_batch_proposed: Instant::now(),
         };
 
@@ -195,12 +188,12 @@ impl BatchProposer {
             _new_tx = self.batch_proposer_rx.recv() => {
                 new_tx = _new_tx;
             },
-            _cmd = self.cmd_rx.recv() => {
-                let (make_new_batches, current_leader) = _cmd.unwrap();
-                self.make_new_batches = make_new_batches;
-                self.current_leader = current_leader;
-                return Ok(());
-            },
+            // _cmd = self.cmd_rx.recv() => {
+            //     let (make_new_batches, current_leader) = _cmd.unwrap();
+            //     self.make_new_batches = make_new_batches;
+            //     self.current_leader = current_leader;
+            //     return Ok(());
+            // },
             _tick = self.batch_timer.wait() => {
                 batch_timer_tick = _tick;
             }
