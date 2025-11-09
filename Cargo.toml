@@ -103,6 +103,7 @@ evil = []
 extra_2pc = []
 no_pipeline = []
 extra_qc_check = []
+dag = []
 
 # Applications
 app_logger = []
@@ -116,6 +117,9 @@ chained_pbft = ["round_robin_leader", "always_sign", "view_change"]
 jolteon = ["round_robin_leader", "always_sign", "view_change", "no_pipeline"]
 hotstuff = ["round_robin_leader", "always_sign", "view_change", "no_pipeline", "extra_qc_check"]
 pirateship = ["round_robin_leader", "dynamic_sign", "view_change"]
+
+dag_pirateship = ["pirateship", "app_logger", "storage", "fast_path", "platforms", "dag"]
+dag_sraft = ["signed_raft", "app_logger", "storage", "fast_path", "platforms", "dag"]
 
 default = ["pirateship", "app_logger", "storage", "fast_path", "platforms"]
 # default = ["jolteon", "app_logger", "storage"]
