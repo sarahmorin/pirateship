@@ -14,21 +14,22 @@
 /// 4. Collect BlockAcks from other nodes
 /// 5. Form CAR when liveness threshold reached
 /// 6. Broadcast CAR to all nodes
-use std::{collections::HashMap, io::Error, sync::Arc};
+use std::{collections::HashMap, sync::Arc};
 
+use ed25519_dalek::SIGNATURE_LENGTH;
 use log::{debug, error, info, trace, warn};
 use prost::Message;
 use tokio::sync::{oneshot, Mutex};
 
 use crate::{
     config::AtomicConfig,
-    crypto::{CachedBlock, CryptoServiceConnector, FutureHash, SIGNATURE_LENGTH},
+    crypto::{CachedBlock, CryptoServiceConnector},
     proto::{
         consensus::ProtoNameWithSignature,
-        dag::{ProtoBlockAck, ProtoBlockCAR},
+        dag::{ProtoBlockAck, ProtoBlockCar},
         rpc::{proto_payload, ProtoPayload},
     },
-    rpc::{client::PinnedClient, PinnedMessage, SenderType},
+    rpc::{client::PinnedClient, MessageRef, SenderType},
     utils::{
         channel::{Receiver, Sender},
         StorageAck,
@@ -51,7 +52,7 @@ struct StoredBlock {
     acknowledgments: HashMap<String, Vec<u8>>,
 
     /// CAR (Certificate of Availability and Replication)
-    car: Option<ProtoBlockCAR>,
+    car: Option<ProtoBlockCar>,
     car_broadcasted: bool,
 }
 
@@ -248,18 +249,14 @@ impl LaneStaging {
         let my_name = &config.net_config.name;
 
         // Create signature on block digest
-        let sig = self
-            .crypto
-            .sign(block.block_hash.clone())
-            .await
-            .expect("Failed to sign block");
+        let sig = self.crypto.sign(&block.block_hash).await;
 
         // Build BlockAck message
         let block_ack = ProtoBlockAck {
             digest: block.block_hash.clone().try_into().unwrap(),
             n: block.block.n,
             lane: lane_id.to_vec(),
-            sig: sig.try_into().unwrap(),
+            sig: sig.to_vec(),
         };
 
         debug!(
@@ -267,18 +264,21 @@ impl LaneStaging {
             block.block.n, lane_id
         );
 
-        // Broadcast to all nodes
+        // Encode payload
+        let payload = ProtoPayload {
+            message: Some(proto_payload::Message::BlockAck(block_ack.clone())),
+        };
+        let buf = payload.encode_to_vec();
+        let sz = buf.len();
+
+        // Broadcast to all nodes (except self)
         for node in &config.consensus_config.node_list {
             if node == my_name {
                 continue; // Don't send to self
             }
 
-            let payload = ProtoPayload {
-                message: Some(proto_payload::Message::BlockAck(block_ack.clone())),
-            };
-
-            let msg = PinnedMessage::new(payload);
-            self.client.send_message(node, msg, None).await;
+            let _ = PinnedClient::send(&self.client, node, MessageRef(&buf, sz, &SenderType::Anon))
+                .await;
         }
 
         Ok(())
@@ -298,14 +298,13 @@ impl LaneStaging {
         );
 
         // Verify the signature
-        let digest_hash: [u8; 32] = match block_ack.digest.clone().try_into() {
+        let digest_hash: Vec<u8> = match block_ack.digest.clone().try_into() {
             Ok(h) => h,
             Err(_) => {
                 warn!("Malformed digest in BlockAck from {}", sender_name);
                 return Ok(());
             }
         };
-        let digest_hash = FutureHash::Known(digest_hash);
 
         let sig: [u8; SIGNATURE_LENGTH] = match block_ack.sig.clone().try_into() {
             Ok(s) => s,
@@ -317,7 +316,7 @@ impl LaneStaging {
 
         let verified = self
             .crypto
-            .verify_nonblocking(digest_hash.clone(), sender_name.clone(), sig)
+            .verify_nonblocking(digest_hash, sender_name.clone(), sig)
             .await
             .await
             .unwrap();
@@ -380,62 +379,86 @@ impl LaneStaging {
 
     /// Form a CAR (Certificate of Availability and Replication) if threshold reached.
     async fn maybe_form_car(&mut self, lane_id: &[u8], seq_num: u64) -> Result<(), ()> {
-        let lane = match self.lane_blocks.get_mut(lane_id) {
-            Some(l) => l,
-            None => return Ok(()),
-        };
+        // Check if CAR already formed and get the necessary data
+        let (should_form_car, block_hash, view, acks) = {
+            let lane = match self.lane_blocks.get(lane_id) {
+                Some(l) => l,
+                None => return Ok(()),
+            };
 
-        let stored_block = match lane.get_mut(&seq_num) {
-            Some(b) => b,
-            None => return Ok(()),
-        };
+            let stored_block = match lane.get(&seq_num) {
+                Some(b) => b,
+                None => return Ok(()),
+            };
 
-        // Check if CAR already formed
-        if stored_block.car.is_some() {
-            return Ok(());
-        }
+            // Check if CAR already formed
+            if stored_block.car.is_some() {
+                return Ok(());
+            }
 
-        // Check if we have enough acknowledgments
-        let threshold = self.liveness_threshold();
-        let ack_count = stored_block.acknowledgments.len();
+            // Check if we have enough acknowledgments
+            let threshold = self.liveness_threshold();
+            let ack_count = stored_block.acknowledgments.len();
 
-        if ack_count < threshold {
-            trace!(
-                "Block n={} in lane has {}/{} acks - waiting for more",
-                seq_num,
-                ack_count,
-                threshold
+            if ack_count < threshold {
+                trace!(
+                    "Block n={} in lane has {}/{} acks - waiting for more",
+                    seq_num,
+                    ack_count,
+                    threshold
+                );
+                return Ok(());
+            }
+
+            info!(
+                "Forming CAR for block n={} in lane {:?} (acks: {}/{})",
+                seq_num, lane_id, ack_count, threshold
             );
+
+            // Collect the data we need
+            let block_hash = stored_block.block.block_hash.clone();
+            let view = stored_block.stats.view;
+            let acks: Vec<_> = stored_block
+                .acknowledgments
+                .iter()
+                .map(|(name, sig)| ProtoNameWithSignature {
+                    name: name.clone(),
+                    sig: sig.clone(),
+                })
+                .collect();
+
+            (true, block_hash, view, acks)
+        };
+
+        // Now we don't hold any references, so we can mutate self
+        if !should_form_car {
             return Ok(());
         }
 
-        info!(
-            "Forming CAR for block n={} in lane {:?} (acks: {}/{})",
-            seq_num, lane_id, ack_count, threshold
-        );
-
-        // Build the CAR with all accumulated signatures
-        let mut sig_array = Vec::new();
-        for (node_name, sig) in &stored_block.acknowledgments {
-            sig_array.push(ProtoNameWithSignature {
-                name: node_name.clone(),
-                sig: sig.clone(),
-            });
-        }
-
-        let car = ProtoBlockCAR {
-            digest: stored_block.block.block_hash.clone().try_into().unwrap(),
+        // Build the CAR
+        let car = ProtoBlockCar {
+            digest: block_hash.try_into().unwrap(),
             n: seq_num,
-            sig: sig_array,
-            view: stored_block.stats.view,
+            sig: acks,
+            view,
         };
 
-        stored_block.car = Some(car.clone());
+        // Store the CAR
+        if let Some(lane) = self.lane_blocks.get_mut(lane_id) {
+            if let Some(stored_block) = lane.get_mut(&seq_num) {
+                stored_block.car = Some(car.clone());
+            }
+        }
 
         // Broadcast the CAR to all nodes
         self.broadcast_car(car).await?;
 
-        stored_block.car_broadcasted = true;
+        // Mark as broadcasted
+        if let Some(lane) = self.lane_blocks.get_mut(lane_id) {
+            if let Some(stored_block) = lane.get_mut(&seq_num) {
+                stored_block.car_broadcasted = true;
+            }
+        }
 
         info!(
             "Block n={} in lane {:?} is now stable with CAR",
@@ -449,7 +472,7 @@ impl LaneStaging {
     }
 
     /// Broadcast a formed CAR to all nodes.
-    async fn broadcast_car(&mut self, car: ProtoBlockCAR) -> Result<(), ()> {
+    async fn broadcast_car(&mut self, car: ProtoBlockCar) -> Result<(), ()> {
         let config = self.config.get();
         let my_name = &config.net_config.name;
 
@@ -458,14 +481,15 @@ impl LaneStaging {
         let payload = ProtoPayload {
             message: Some(proto_payload::Message::BlockCar(car)),
         };
-
-        let msg = PinnedMessage::new(payload);
+        let buf = payload.encode_to_vec();
+        let sz = buf.len();
 
         for node in &config.consensus_config.node_list {
             if node == my_name {
                 continue;
             }
-            self.client.send_message(node, msg.clone(), None).await;
+            let _ = PinnedClient::send(&self.client, node, MessageRef(&buf, sz, &SenderType::Anon))
+                .await;
         }
 
         Ok(())
