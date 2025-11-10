@@ -27,8 +27,12 @@ use crate::proto::execution::ProtoTransaction;
 
 use super::{
     app::AppCommand,
-    fork_receiver::{AppendEntriesStats, ForkReceiverCommand, MultipartFork},
+    fork_receiver::{AppendEntriesStats, BroadcasterMessage, ForkReceiverCommand, MultipartFork},
+    staging::{ForkProposal, StagingMessage},
 };
+
+#[cfg(feature = "dag")]
+use super::{fork_receiver::MultipartTipCut, staging::TipCutProposal};
 
 pub enum BlockBroadcasterCommand {
     UpdateCI(u64),
@@ -44,18 +48,13 @@ pub struct BlockBroadcaster {
 
     // Input ports
     my_block_rx: Receiver<(u64, oneshot::Receiver<CachedBlock>)>,
-    other_block_rx: Receiver<MultipartFork>,
+    other_block_rx: Receiver<BroadcasterMessage>,
     control_command_rx: Receiver<BlockBroadcasterCommand>,
 
     // Output ports
     storage: StorageServiceConnector,
     client: PinnedClient,
-    staging_tx: Sender<(
-        CachedBlock,
-        oneshot::Receiver<StorageAck>,
-        AppendEntriesStats,
-        bool, /* this_is_final_block */
-    )>,
+    staging_tx: Sender<StagingMessage>,
 
     // Command ports
     fork_receiver_command_tx: Sender<ForkReceiverCommand>,
@@ -74,15 +73,10 @@ impl BlockBroadcaster {
         client: PinnedClient,
         crypto: CryptoServiceConnector,
         my_block_rx: Receiver<(u64, oneshot::Receiver<CachedBlock>)>,
-        other_block_rx: Receiver<MultipartFork>,
+        other_block_rx: Receiver<BroadcasterMessage>,
         control_command_rx: Receiver<BlockBroadcasterCommand>,
         storage: StorageServiceConnector,
-        staging_tx: Sender<(
-            CachedBlock,
-            oneshot::Receiver<StorageAck>,
-            AppendEntriesStats,
-            bool,
-        )>,
+        staging_tx: Sender<StagingMessage>,
         fork_receiver_command_tx: Sender<ForkReceiverCommand>,
         app_command_tx: Sender<AppCommand>,
     ) -> Self {
@@ -191,16 +185,19 @@ impl BlockBroadcaster {
                 trace!("Processed block {}", __n);
             },
 
-            block_vec = self.other_block_rx.recv() => {
-                if block_vec.is_none() {
+            msg = self.other_block_rx.recv() => {
+                if msg.is_none() {
                     return Err(Error::new(ErrorKind::BrokenPipe, "other_block_rx channel closed"));
                 }
-                let blocks = block_vec.unwrap();
-                // info!("Processing other block");
-
-                self.process_other_block(blocks).await?;
-
-                // info!("Processed other block");
+                match msg.unwrap() {
+                    BroadcasterMessage::Fork(fork) => {
+                        self.process_other_block(fork).await?;
+                    }
+                    #[cfg(feature = "dag")]
+                    BroadcasterMessage::TipCut(tipcut) => {
+                        self.process_other_tipcut(tipcut).await?;
+                    }
+                }
             },
 
             cmd = self.control_command_rx.recv() => {
@@ -270,7 +267,12 @@ impl BlockBroadcaster {
 
         // info!("Sending {}", block.block.n);
         self.staging_tx
-            .send((block.clone(), storage_ack, ae_stats, this_is_final_block))
+            .send(StagingMessage::Fork(ForkProposal {
+                block: block.clone(),
+                storage_ack,
+                ae_stats,
+                this_is_final_block,
+            }))
             .await
             .unwrap();
         // info!("Sent {}", block.block.n);
@@ -441,6 +443,31 @@ impl BlockBroadcaster {
                 .await
                 .unwrap();
         }
+
+        Ok(())
+    }
+
+    #[cfg(feature = "dag")]
+    async fn process_other_tipcut(&mut self, tipcut: MultipartTipCut) -> Result<(), Error> {
+        info!(
+            "Processing TipCut with {} CARs from {} for view {} (ci={})",
+            tipcut.tipcut.tips.len(),
+            tipcut.ae_stats.sender,
+            tipcut.ae_stats.view,
+            tipcut.ae_stats.ci
+        );
+
+        // Forward tip cut to staging for consensus voting
+        // Staging will decide whether to vote for this tip cut
+        self.staging_tx
+            .send(StagingMessage::TipCut(TipCutProposal {
+                tipcut: tipcut.tipcut,
+                ae_stats: tipcut.ae_stats,
+            }))
+            .await
+            .unwrap();
+
+        debug!("Forwarded tip cut to staging for voting");
 
         Ok(())
     }
