@@ -13,8 +13,9 @@ use crate::{
     proto::{
         checkpoint::{proto_backfill_nack::Origin, ProtoBackfillNack, ProtoBlockHint},
         consensus::{
-            proto_block::Sig, HalfSerializedBlock, ProtoAppendEntries, ProtoFork, ProtoViewChange,
+            proto_block::Sig, HalfSerializedBlock,
         },
+        dag::ProtoAppendBlock,
         rpc::{proto_payload::Message, ProtoPayload},
     },
     rpc::{client::PinnedClient, MessageRef},
@@ -331,22 +332,33 @@ impl LaneLogServer {
         let last_n = existing_fork.serialized_blocks.last().unwrap().n;
         let first_n = backfill_req.last_index_needed;
 
-        let new_fork = self.fill_fork(&proposer_sig, first_n, last_n, hints).await;
+        // Get the requested block from this lane
+        let requested_block = self.get_block_for_backfill(&proposer_sig, first_n, last_n, hints).await;
 
         let payload = match backfill_req.origin.unwrap() {
-            Origin::Ae(ae) => ProtoPayload {
-                message: Some(Message::AppendEntries(ProtoAppendEntries {
-                    fork: Some(new_fork),
-                    is_backfill_response: true,
-                    ..ae
-                })),
+            Origin::Ae(ae) => {
+                if let Some(block) = requested_block {
+                    ProtoPayload {
+                        message: Some(Message::AppendBlock(ProtoAppendBlock {
+                            block: Some(block),
+                            commit_index: ae.commit_index,
+                            view: ae.view,
+                            view_is_stable: ae.view_is_stable,
+                            config_num: ae.config_num,
+                            is_backfill_response: true,
+                        })),
+                    }
+                } else {
+                    warn!("Could not find requested block for backfill");
+                    return Ok(());
+                }
             },
 
-            Origin::Vc(vc) => ProtoPayload {
-                message: Some(Message::ViewChange(ProtoViewChange {
-                    fork: Some(new_fork),
-                    ..vc
-                })),
+            Origin::Vc(_vc) => {
+                // ViewChange still uses forks, so we need to keep fork logic for VC
+                // For now, we'll skip VC backfill in DAG mode or handle it separately
+                warn!("ViewChange backfill not yet implemented for DAG mode");
+                return Ok(());
             },
         };
 
@@ -363,17 +375,18 @@ impl LaneLogServer {
         Ok(())
     }
 
-    /// Returns a fork that contains blocks from `first_n` to `last_n` (both inclusive) for a specific lane.
-    /// During the process, if one of my blocks matches in hints, we stop.
-    async fn fill_fork(
+    /// Returns the most recent block from `first_n` to `last_n` for backfill in a specific lane.
+    /// In DAG mode, we send single blocks, not forks. We find the first block that doesn't match hints.
+    async fn get_block_for_backfill(
         &mut self,
         proposer_sig: &Vec<u8>,
         first_n: u64,
         last_n: u64,
         mut hints: Vec<ProtoBlockHint>,
-    ) -> ProtoFork {
+    ) -> Option<HalfSerializedBlock> {
         if last_n < first_n {
-            panic!("Invalid range");
+            warn!("Invalid range: last_n ({}) < first_n ({})", last_n, first_n);
+            return None;
         }
 
         let hint_map = hints
@@ -381,39 +394,36 @@ impl LaneLogServer {
             .map(|hint| (hint.block_n, hint.digest))
             .collect::<HashMap<_, _>>();
 
-        let mut fork_queue = VecDeque::with_capacity((last_n - first_n + 1) as usize);
-
+        // Search backwards from last_n to first_n to find the first block that doesn't match hints
         for i in (first_n..=last_n).rev() {
             let block = match self.get_block(proposer_sig, i).await {
                 Some(block) => block,
                 None => {
                     warn!("Block {} not found in lane {:?}", i, proposer_sig);
-                    break;
+                    continue;
                 }
             };
 
             let hint = hint_map.get(&i);
             if let Some(hint) = hint {
                 if hint.eq(&block.block_hash) {
-                    break;
+                    // This block matches, requester already has it, continue searching
+                    continue;
                 }
             }
 
-            fork_queue.push_front(block);
+            // Found a block that doesn't match or no hint for it - this is what we need to send
+            return Some(HalfSerializedBlock {
+                n: block.block.n,
+                view: block.block.view,
+                view_is_stable: block.block.view_is_stable,
+                config_num: block.block.config_num,
+                serialized_body: block.block_ser.clone(),
+            });
         }
 
-        ProtoFork {
-            serialized_blocks: fork_queue
-                .into_iter()
-                .map(|block| HalfSerializedBlock {
-                    n: block.block.n,
-                    view: block.block.view,
-                    view_is_stable: block.block.view_is_stable,
-                    config_num: block.block.config_num,
-                    serialized_body: block.block_ser.clone(),
-                })
-                .collect(),
-        }
+        // No suitable block found
+        None
     }
 
     async fn handle_query(&mut self, query: LaneLogServerQuery) {
