@@ -13,9 +13,8 @@ use crate::{
     proto::{
         checkpoint::{proto_backfill_nack::Origin, ProtoBackfillNack, ProtoBlockHint},
         consensus::{
-            proto_block::Sig, HalfSerializedBlock,
+            proto_block::Sig, HalfSerializedBlock, ProtoAppendBlock,
         },
-        dag::ProtoAppendBlock,
         rpc::{proto_payload::Message, ProtoPayload},
     },
     rpc::{client::PinnedClient, MessageRef},
@@ -286,10 +285,10 @@ impl LaneLogServer {
         let sender = backfill_req.reply_name;
         let hints = backfill_req.hints;
         let existing_fork = match &backfill_req.origin {
-            Some(Origin::Ae(ae)) => match ae.fork.as_ref() {
-                Some(fork) => fork,
-                None => {
-                    warn!("Malformed request");
+            Some(Origin::Ae(ae)) => match &ae.entry {
+                Some(crate::proto::consensus::proto_append_entries::Entry::Fork(fork)) => fork,
+                _ => {
+                    warn!("Malformed request - no fork in AppendEntries");
                     return Ok(());
                 }
             },

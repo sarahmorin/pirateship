@@ -24,7 +24,7 @@ use tokio::sync::{oneshot, Mutex};
 use crate::{
     config::AtomicConfig,
     proto::{
-        dag::ProtoTipCut,
+        consensus::ProtoTipCut,
         rpc::{proto_payload, ProtoPayload},
     },
     rpc::{client::PinnedClient, MessageRef, SenderType},
@@ -251,9 +251,24 @@ impl TipCutProposal {
             self.ci
         );
 
-        // Construct ProtoTipCut message
+        // Collect CARs into a vec
+        let cars: Vec<_> = tip_cut.cars.into_values().collect();
+        
+        // TODO: Compute proper digest and parent
+        // For now, using placeholder values
+        let digest = vec![0u8; 32]; // Placeholder
+        let parent = vec![0u8; 32]; // Placeholder
+
+        // Construct ProtoTipCut message with new structure
         let proto_tip_cut = ProtoTipCut {
-            tip_cut: tip_cut.cars.into_values().collect(),
+            digest,
+            parent,
+            tips: cars,
+        };
+
+        // Wrap in AppendEntries for consensus protocol
+        let append_entries = crate::proto::consensus::ProtoAppendEntries {
+            entry: Some(crate::proto::consensus::proto_append_entries::Entry::Tipcut(proto_tip_cut)),
             commit_index: self.ci,
             view: self.view,
             view_is_stable: self.view_is_stable,
@@ -262,7 +277,7 @@ impl TipCutProposal {
         };
 
         // Broadcast to all nodes
-        self.broadcast_tip_cut(proto_tip_cut).await?;
+        self.broadcast_tip_cut(append_entries).await?;
 
         Ok(())
     }
@@ -285,19 +300,26 @@ impl TipCutProposal {
         })
     }
 
-    /// Broadcast a tip cut to all nodes.
-    async fn broadcast_tip_cut(&mut self, tip_cut: ProtoTipCut) -> Result<(), ()> {
+    /// Broadcast a tip cut to all nodes wrapped in AppendEntries.
+    async fn broadcast_tip_cut(&mut self, append_entries: crate::proto::consensus::ProtoAppendEntries) -> Result<(), ()> {
         let config = self.config.get();
         let my_name = &config.net_config.name;
 
+        // Extract tip count for logging
+        let tip_count = if let Some(crate::proto::consensus::proto_append_entries::Entry::Tipcut(ref tc)) = append_entries.entry {
+            tc.tips.len()
+        } else {
+            0
+        };
+
         debug!(
             "Broadcasting tip cut with {} CARs to all nodes",
-            tip_cut.tip_cut.len()
+            tip_count
         );
 
         // Encode the payload
         let payload = ProtoPayload {
-            message: Some(proto_payload::Message::TipCut(tip_cut)),
+            message: Some(proto_payload::Message::AppendEntries(append_entries)),
         };
 
         let buf = payload.encode_to_vec();

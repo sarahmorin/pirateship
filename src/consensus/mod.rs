@@ -34,7 +34,7 @@ use crate::{
 };
 
 #[cfg(feature = "dag")]
-use crate::proto::dag::{ProtoAppendBlock, ProtoBlockAck, ProtoTipCut, ProtoTipCutVote};
+use crate::proto::consensus::{ProtoAppendBlock, ProtoBlockAck, ProtoTipCut};
 use app::{AppEngine, Application};
 use batch_proposal::{BatchProposer, TxWithAckChanTag};
 use block_broadcaster::BlockBroadcaster;
@@ -275,20 +275,8 @@ impl ServerContextType for PinnedConsensusServerContext {
                 return Ok(RespType::NoResp);
             }
             
-            #[cfg(feature = "dag")]
-            crate::proto::rpc::proto_payload::Message::TcVote(proto_tc_vote) => {
-                self.tip_cut_vote_tx
-                    .send((proto_tc_vote, sender))
-                    .await
-                    .expect("Channel send error");
-                return Ok(RespType::NoResp);
-            }
-            
-            #[cfg(not(feature = "dag"))]
-            crate::proto::rpc::proto_payload::Message::TcVote(_proto_tc_vote) => {
-                warn!("Received TipCutVote in leader mode - ignoring");
-                return Ok(RespType::NoResp);
-            }
+            // Note: TipCut votes now use the regular Vote message (ProtoVote)
+            // which supports voting for both Fork and TipCut via the digest field
             
             crate::proto::rpc::proto_payload::Message::Vote(proto_vote) => {
                 self.vote_receiver_tx
