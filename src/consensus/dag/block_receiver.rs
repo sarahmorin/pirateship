@@ -6,7 +6,7 @@ use tokio::sync::{oneshot, Mutex};
 
 use crate::{
     config::AtomicConfig,
-    crypto::{CachedBlock, CryptoServiceConnector, FutureHash, HashType},
+    crypto::{CachedBlock, CryptoServiceConnector, FutureHash},
     proto::{
         checkpoint::ProtoBackfillNack, consensus::proto_block::Sig, dag::ProtoAppendBlock,
         rpc::ProtoPayload,
@@ -121,7 +121,7 @@ impl BlockReceiver {
         broadcaster_tx: Sender<SingleBlock>,
         lane_logserver_query_tx: Sender<LaneLogServerQuery>,
     ) -> Self {
-        let mut ret = Self {
+        let ret = Self {
             config,
             crypto,
             client,
@@ -136,8 +136,8 @@ impl BlockReceiver {
 
         #[cfg(not(feature = "view_change"))]
         {
-            ret.view = 1;
-            ret.config_num = 1;
+            // TODO: Initialize view and config_num based on view_change feature
+            // For now, keeping initialization in struct construction
         }
 
         ret
@@ -259,8 +259,11 @@ impl BlockReceiver {
         };
 
         // Verify the single block cryptographically
-        // TODO: Update prepare_block signature when crypto service is updated for DAG
-        let (block_rx, hash_rx, hash_rx2) = self
+        // The crypto service returns:
+        // - block_rx: oneshot::Receiver<CachedBlock> (the verified block)
+        // - hash_rx: oneshot::Receiver<Vec<u8>> (the block hash)
+        // - hash_rx2: oneshot::Receiver<Vec<u8>> (duplicate hash for convenience)
+        let (block_rx, hash_rx, _hash_rx2) = self
             .crypto
             .prepare_block(
                 match deserialize_proto_block(&half_serialized.serialized_body) {
@@ -285,21 +288,54 @@ impl BlockReceiver {
             proposer_sig: proposer_sig.clone(),
         };
 
+        // Wrap the block receiver to match the expected Result type
+        // The crypto service guarantees the block is valid at this point
+        let (result_tx, result_rx) = oneshot::channel();
+        tokio::spawn(async move {
+            match block_rx.await {
+                Ok(block) => {
+                    let _ = result_tx.send(Ok(block));
+                }
+                Err(_) => {
+                    let _ = result_tx.send(Err(Error::new(
+                        std::io::ErrorKind::Other,
+                        "Block verification cancelled",
+                    )));
+                }
+            }
+        });
+
         // Forward to broadcaster
         let single_block = SingleBlock {
-            block_future: block_rx,
+            block_future: result_rx,
             stats,
         };
 
         self.broadcaster_tx.send(single_block).await.unwrap();
 
         // Update lane continuity with the hash of this block
+        // Wrap hash receiver to match FutureResult type
+        let (hash_result_tx, hash_result_rx) = oneshot::channel();
+        tokio::spawn(async move {
+            match hash_rx.await {
+                Ok(hash) => {
+                    let _ = hash_result_tx.send(Ok(hash));
+                }
+                Err(_) => {
+                    let _ = hash_result_tx.send(Err(Error::new(
+                        std::io::ErrorKind::Other,
+                        "Hash calculation cancelled",
+                    )));
+                }
+            }
+        });
+
         let lane_stats = self
             .lane_continuity
             .entry(proposer_sig.clone())
             .or_insert_with(LaneContinuityStats::new);
 
-        lane_stats.last_block_hash = FutureHash::FutureResult(hash_rx);
+        lane_stats.last_block_hash = FutureHash::FutureResult(hash_result_rx);
         lane_stats.last_block_n = half_serialized.n;
     }
 
@@ -470,17 +506,21 @@ impl BlockReceiver {
         .await;
     }
 
+    #[allow(dead_code)]
     fn liveness_threshold(&self) -> usize {
-        let n = self.config.get().consensus_config.node_list.len();
-
         #[cfg(feature = "platforms")]
         {
+            let n = self.config.get().consensus_config.node_list.len();
             let u = self.config.get().consensus_config.liveness_u as usize;
+            if n <= u {
+                return 1;
+            }
             u + 1
         }
 
         #[cfg(not(feature = "platforms"))]
         {
+            let n = self.config.get().consensus_config.node_list.len();
             let f = n / 3;
             f + 1
         }
