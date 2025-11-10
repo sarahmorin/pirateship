@@ -12,9 +12,7 @@ use crate::{
     crypto::CachedBlock,
     proto::{
         checkpoint::{proto_backfill_nack::Origin, ProtoBackfillNack, ProtoBlockHint},
-        consensus::{
-            proto_block::Sig, HalfSerializedBlock, ProtoAppendBlock,
-        },
+        consensus::{proto_block::Sig, HalfSerializedBlock, ProtoAppendBlock},
         rpc::{proto_payload::Message, ProtoPayload},
     },
     rpc::{client::PinnedClient, MessageRef},
@@ -332,7 +330,9 @@ impl LaneLogServer {
         let first_n = backfill_req.last_index_needed;
 
         // Get the requested block from this lane
-        let requested_block = self.get_block_for_backfill(&proposer_sig, first_n, last_n, hints).await;
+        let requested_block = self
+            .get_block_for_backfill(&proposer_sig, first_n, last_n, hints)
+            .await;
 
         let payload = match backfill_req.origin.unwrap() {
             Origin::Ae(ae) => {
@@ -351,14 +351,14 @@ impl LaneLogServer {
                     warn!("Could not find requested block for backfill");
                     return Ok(());
                 }
-            },
+            }
 
             Origin::Vc(_vc) => {
                 // ViewChange still uses forks, so we need to keep fork logic for VC
                 // For now, we'll skip VC backfill in DAG mode or handle it separately
                 warn!("ViewChange backfill not yet implemented for DAG mode");
                 return Ok(());
-            },
+            }
         };
 
         // Send the payload to the sender.

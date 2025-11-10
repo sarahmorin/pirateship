@@ -785,7 +785,7 @@ impl BlockBroadcaster {
                             serialized_body: block.block_ser.clone(),
                         })
                         .collect(),
-                }
+                },
             )),
             commit_index: self.ci,
             view,

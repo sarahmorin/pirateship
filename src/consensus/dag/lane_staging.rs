@@ -25,7 +25,7 @@ use crate::{
     config::AtomicConfig,
     crypto::{CachedBlock, CryptoServiceConnector},
     proto::{
-        consensus::{ProtoNameWithSignature, ProtoBlockAck, ProtoBlockCar},
+        consensus::{ProtoBlockAck, ProtoBlockCar, ProtoNameWithSignature},
         rpc::{proto_payload, ProtoPayload},
     },
     rpc::{client::PinnedClient, MessageRef, SenderType},

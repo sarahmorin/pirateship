@@ -8,7 +8,8 @@ use crate::{
     config::AtomicConfig,
     crypto::{CachedBlock, CryptoServiceConnector, FutureHash},
     proto::{
-        checkpoint::ProtoBackfillNack, consensus::{proto_block::Sig, ProtoAppendBlock},
+        checkpoint::ProtoBackfillNack,
+        consensus::{proto_block::Sig, ProtoAppendBlock},
         rpc::ProtoPayload,
     },
     rpc::{client::PinnedClient, MessageRef, SenderType},
@@ -99,7 +100,6 @@ pub struct BlockReceiver {
     block_rx: Receiver<(ProtoAppendBlock, SenderType /* Sender */)>,
     command_rx: Receiver<BlockReceiverCommand>,
 
-    // TODO: Update to use DAG-specific broadcaster type when implemented
     broadcaster_tx: Sender<SingleBlock>,
 
     // Per-lane continuity tracking
@@ -480,7 +480,7 @@ impl BlockReceiver {
                     entry: Some(crate::proto::consensus::proto_append_entries::Entry::Fork(
                         crate::proto::consensus::ProtoFork {
                             serialized_blocks: block.block.map_or(vec![], |b| vec![b]),
-                        }
+                        },
                     )),
                     commit_index: block.commit_index,
                     view: block.view,

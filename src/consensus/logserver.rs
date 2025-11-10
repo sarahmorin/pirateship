@@ -290,7 +290,9 @@ impl LogServer {
         let payload = match backfill_req.origin.unwrap() {
             Origin::Ae(ae) => ProtoPayload {
                 message: Some(Message::AppendEntries(ProtoAppendEntries {
-                    entry: Some(crate::proto::consensus::proto_append_entries::Entry::Fork(new_fork)),
+                    entry: Some(crate::proto::consensus::proto_append_entries::Entry::Fork(
+                        new_fork,
+                    )),
                     is_backfill_response: true,
                     ..ae
                 })),

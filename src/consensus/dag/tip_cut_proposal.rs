@@ -217,13 +217,6 @@ impl TipCutProposal {
     ///
     /// For now, returns true (always propose on timer tick if leader).
     fn should_propose_tip_cut(&self) -> bool {
-        // TODO: Add more sophisticated decision logic here
-        // Examples:
-        // - Check if enough time has passed since last proposal
-        // - Check if enough new CARs are available
-        // - Check if enough lanes have new blocks
-        // - Consider network conditions or commit progress
-
         true // For now, always propose when timer ticks
     }
 
@@ -253,7 +246,7 @@ impl TipCutProposal {
 
         // Collect CARs into a vec
         let cars: Vec<_> = tip_cut.cars.into_values().collect();
-        
+
         // TODO: Compute proper digest and parent
         // For now, using placeholder values
         let digest = vec![0u8; 32]; // Placeholder
@@ -268,7 +261,9 @@ impl TipCutProposal {
 
         // Wrap in AppendEntries for consensus protocol
         let append_entries = crate::proto::consensus::ProtoAppendEntries {
-            entry: Some(crate::proto::consensus::proto_append_entries::Entry::Tipcut(proto_tip_cut)),
+            entry: Some(
+                crate::proto::consensus::proto_append_entries::Entry::Tipcut(proto_tip_cut),
+            ),
             commit_index: self.ci,
             view: self.view,
             view_is_stable: self.view_is_stable,
@@ -301,21 +296,24 @@ impl TipCutProposal {
     }
 
     /// Broadcast a tip cut to all nodes wrapped in AppendEntries.
-    async fn broadcast_tip_cut(&mut self, append_entries: crate::proto::consensus::ProtoAppendEntries) -> Result<(), ()> {
+    async fn broadcast_tip_cut(
+        &mut self,
+        append_entries: crate::proto::consensus::ProtoAppendEntries,
+    ) -> Result<(), ()> {
         let config = self.config.get();
         let my_name = &config.net_config.name;
 
         // Extract tip count for logging
-        let tip_count = if let Some(crate::proto::consensus::proto_append_entries::Entry::Tipcut(ref tc)) = append_entries.entry {
-            tc.tips.len()
-        } else {
-            0
-        };
+        let tip_count =
+            if let Some(crate::proto::consensus::proto_append_entries::Entry::Tipcut(ref tc)) =
+                append_entries.entry
+            {
+                tc.tips.len()
+            } else {
+                0
+            };
 
-        debug!(
-            "Broadcasting tip cut with {} CARs to all nodes",
-            tip_count
-        );
+        debug!("Broadcasting tip cut with {} CARs to all nodes", tip_count);
 
         // Encode the payload
         let payload = ProtoPayload {
