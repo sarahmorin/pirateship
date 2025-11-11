@@ -569,7 +569,6 @@ impl BlockBroadcaster {
         }
     }
 
-    #[cfg(not(feature = "dag"))]
     async fn broadcast_ae_fork(
         &mut self,
         names: Vec<String>,
