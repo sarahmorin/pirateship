@@ -463,20 +463,38 @@ impl<E: AppEngine + Send + Sync> ConsensusNode<E> {
         let batch_proposer = BatchProposer::new(
             config.clone(),
             batch_proposer_rx,
-            block_maker_tx,
+            block_maker_tx.clone(),
             client_reply_command_tx.clone(),
             unlogged_tx,
             batch_proposer_command_rx,
         );
+
+        #[cfg(not(feature = "dag"))]
         let block_sequencer = BlockSequencer::new(
             config.clone(),
             control_command_rx,
             block_maker_rx,
             qc_rx,
-            block_broadcaster_tx,
+            block_broadcaster_tx.clone(),
             client_reply_tx,
             block_maker_crypto,
         );
+
+        #[cfg(feature = "dag")]
+        let (tipcut_tx, tipcut_rx) = make_channel(_chan_depth);
+        #[cfg(feature = "dag")]
+        let block_sequencer = BlockSequencer::new(
+            config.clone(),
+            control_command_rx,
+            block_maker_rx,
+            qc_rx,
+            block_broadcaster_tx.clone(),
+            client_reply_tx,
+            block_maker_crypto,
+            tipcut_rx,
+            broadcaster_control_command_tx.clone(),
+        );
+
         let block_broadcaster = BlockBroadcaster::new(
             config.clone(),
             client.into(),
@@ -809,6 +827,7 @@ impl<E: AppEngine + Send + Sync> ConsensusNode<E> {
             dag_tip_cut_proposal_client.into(),
             dag_lane_staging_query_tx,
             dag_tip_cut_proposal_command_rx,
+            tipcut_tx,
         );
 
         // Create shared components that work differently in DAG mode
