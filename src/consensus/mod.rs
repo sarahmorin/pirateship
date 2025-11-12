@@ -822,14 +822,6 @@ impl<E: AppEngine + Send + Sync> ConsensusNode<E> {
             dag_lane_logserver_storage,
         );
 
-        let dag_tip_cut_proposal = dag::tip_cut_proposal::TipCutProposal::new(
-            config.clone(),
-            dag_tip_cut_proposal_client.into(),
-            dag_lane_staging_query_tx,
-            dag_tip_cut_proposal_command_rx,
-            tipcut_tx,
-        );
-
         // Create shared components that work differently in DAG mode
         // In DAG mode, block_broadcaster and fork_receiver handle tip cuts (via AppendEntries)
         // instead of traditional forks
@@ -844,6 +836,25 @@ impl<E: AppEngine + Send + Sync> ConsensusNode<E> {
         let (tip_cut_fork_receiver_command_tx, tip_cut_fork_receiver_command_rx) = make_channel(_chan_depth);
         let (tip_cut_other_block_tx, tip_cut_other_block_rx) = make_channel(_chan_depth);
         let (tip_cut_block_broadcaster_rx_chan, tip_cut_block_broadcaster_rx) = make_channel(_chan_depth);
+
+        // Tip cut proposal channel - sends tip cuts for broadcast
+        let (dag_tip_cut_broadcast_tx, dag_tip_cut_broadcast_rx) = make_channel(_chan_depth);
+
+        let dag_tip_cut_proposal = dag::tip_cut_proposal::TipCutProposal::new(
+            config.clone(),
+            dag_tip_cut_proposal_client.into(),
+            dag_lane_staging_query_tx,
+            dag_tip_cut_proposal_command_rx,
+            dag_tip_cut_broadcast_tx,
+        );
+
+        // TODO: Tip cut broadcasting mechanism not yet implemented
+        // dag_tip_cut_broadcast_rx should be consumed by a component that:
+        // 1. Wraps tip cuts in blocks
+        // 2. Computes digests/signatures
+        // 3. Broadcasts via AppendEntries to all nodes
+        // For now, tip cuts won't be broadcast
+        drop(dag_tip_cut_broadcast_rx);
 
         let block_broadcaster = BlockBroadcaster::new(
             config.clone(),
