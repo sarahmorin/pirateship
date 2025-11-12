@@ -483,11 +483,13 @@ impl LaneStaging {
         }
 
         // Build the CAR
+        let my_name = self.config.get().net_config.name.clone();
         let car = ProtoBlockCar {
             digest: block_hash.try_into().unwrap(),
             n: seq_num,
             sig: acks,
             view,
+            origin_node: my_name,  // Track which node accepted the client requests
         };
 
         // Store the CAR

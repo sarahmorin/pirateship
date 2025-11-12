@@ -472,4 +472,86 @@ impl Staging {
             .send(LogServerCommand::UpdateBCI(self.bci))
             .await;
     }
+
+    /// Add topologically sorted blocks from a committed tip cut with origin node information
+    /// for the proxy pattern. This enables forwarding execution results to the correct nodes.
+    ///
+    /// Called by TipCutSort after it has fetched and sorted blocks from a committed tip cut.
+    #[cfg(feature = "dag")]
+    pub async fn add_sorted_tipcut_blocks_with_origins(
+        &mut self,
+        blocks: Vec<CachedBlock>,
+        origin_map: std::collections::HashMap<HashType, String>,
+    ) {
+        info!(
+            "Adding {} topologically sorted blocks from tip cut with {} origin entries",
+            blocks.len(),
+            origin_map.len()
+        );
+
+        // Determine the highest block.n from the sorted blocks
+        // This becomes our new BCI
+        let new_bci = blocks.last().map(|b| b.block.n).unwrap_or(self.bci);
+
+        // Wrap each CachedBlock in CachedBlockWithVotes structure
+        for block in blocks {
+            let block_with_votes = CachedBlockWithVotes {
+                block: block.clone(),
+                vote_sigs: HashMap::new(),
+                replication_set: HashSet::new(),
+                qc_is_proposed: true,  // Already consensus-committed via tip cut
+                fast_qc_is_proposed: false,
+            };
+            
+            self.pending_blocks.push_back(block_with_votes);
+            
+            debug!(
+                "Added block {} to pending_blocks (origin: {})",
+                block.block.n,
+                origin_map.get(&block.block_hash).unwrap_or(&"unknown".to_string())
+            );
+        }
+
+        // Update BCI and trigger Byzantine commit
+        self.bci = new_bci;
+        self.ci = new_bci;
+
+        info!(
+            "Updated BCI to {} after tip cut commit, triggering Byzantine commit with origin map",
+            new_bci
+        );
+
+        // Execute all committed blocks
+        let mut byz_blocks = Vec::new();
+
+        while let Some(block) = self.pending_blocks.front() {
+            if block.block.block.n > new_bci {
+                break;
+            }
+
+            let block = self.pending_blocks.pop_front().unwrap().block;
+
+            if block.block.n == new_bci {
+                self.curr_parent_for_pending = Some(block.clone());
+            }
+
+            byz_blocks.push(block);
+        }
+
+        info!(
+            "Sending ByzCommitWithOrigins with {} blocks to Application layer",
+            byz_blocks.len()
+        );
+
+        // Send Byzantine commit command with origin map for proxy pattern
+        let _ = self
+            .app_tx
+            .send(AppCommand::ByzCommitWithOrigins(byz_blocks, origin_map))
+            .await;
+            
+        let _ = self
+            .logserver_tx
+            .send(LogServerCommand::UpdateBCI(self.bci))
+            .await;
+    }
 }

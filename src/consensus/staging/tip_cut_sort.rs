@@ -280,10 +280,46 @@ impl TipCutSort {
             tip_cut.tip_cut_n
         );
 
+        // Build mapping of block hash → origin node for proxy pattern
+        // Each block in a lane inherits the origin_node from its lane's CAR
+        #[cfg(feature = "dag")]
+        let mut origin_map = std::collections::HashMap::new();
+        
+        #[cfg(feature = "dag")]
+        for cached_block in &cached_blocks {
+            // Find which lane this block belongs to by checking the CAR digests
+            // The block's hash should match a CAR's digest in the tip cut
+            for (lane_id, car) in &tip_cut.cars {
+                // Check if this block could belong to this lane's CAR
+                // In DAG mode, each lane has one CAR per tip cut, and the CAR
+                // covers blocks up to sequence number car.n
+                if cached_block.block_hash.as_ref() == car.digest.as_slice() {
+                    // This block is the one certified by this CAR
+                    origin_map.insert(
+                        cached_block.block_hash.clone(),
+                        car.origin_node.clone(),
+                    );
+                    break;
+                }
+            }
+        }
+
+        #[cfg(feature = "dag")]
+        info!(
+            "Built origin_map with {} entries for proxy pattern",
+            origin_map.len()
+        );
+
         // Call Staging directly to add sorted blocks and trigger Byzantine commit
         // This reuses all existing Byzantine commit logic from steady_state.rs
         let mut staging = self.staging.lock().await;
+        
+        #[cfg(feature = "dag")]
+        staging.add_sorted_tipcut_blocks_with_origins(cached_blocks, origin_map).await;
+        
+        #[cfg(not(feature = "dag"))]
         staging.add_sorted_tipcut_blocks(cached_blocks).await;
+        
         drop(staging);  // Release lock
 
         info!(

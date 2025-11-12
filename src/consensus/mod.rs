@@ -78,6 +78,8 @@ pub struct ConsensusServerContext {
     block_ack_tx: Sender<(ProtoBlockAck, SenderType)>,
     #[cfg(feature = "dag")]
     tip_cut_tx: Sender<(ProtoTipCut, SenderType)>,
+    #[cfg(feature = "dag")]
+    execution_results_tx: Sender<crate::proto::consensus::ProtoExecutionResults>,
 
     vote_receiver_tx: Sender<VoteWithSender>,
     view_change_receiver_tx: Sender<(ProtoViewChange, SenderType)>,
@@ -119,6 +121,7 @@ impl PinnedConsensusServerContext {
         block_receiver_tx: Sender<(ProtoAppendBlock, SenderType)>,
         block_ack_tx: Sender<(ProtoBlockAck, SenderType)>,
         tip_cut_tx: Sender<(ProtoTipCut, SenderType)>,
+        execution_results_tx: Sender<crate::proto::consensus::ProtoExecutionResults>,
         vote_receiver_tx: Sender<VoteWithSender>,
         view_change_receiver_tx: Sender<(ProtoViewChange, SenderType)>,
         backfill_request_tx: Sender<ProtoBackfillNack>,
@@ -130,6 +133,7 @@ impl PinnedConsensusServerContext {
             block_receiver_tx,
             block_ack_tx,
             tip_cut_tx,
+            execution_results_tx,
             vote_receiver_tx,
             view_change_receiver_tx,
             backfill_request_tx,
@@ -268,6 +272,26 @@ impl ServerContextType for PinnedConsensusServerContext {
             #[cfg(not(feature = "dag"))]
             crate::proto::rpc::proto_payload::Message::TipCut(_proto_tip_cut) => {
                 warn!("Received TipCut in leader mode - ignoring");
+                return Ok(RespType::NoResp);
+            }
+
+            #[cfg(feature = "dag")]
+            crate::proto::rpc::proto_payload::Message::ExecutionResults(proto_execution_results) => {
+                // Forward to client reply handler to match with local reply channels
+                debug!("Received ExecutionResults for block hash {:?}, forwarding to ClientReplyHandler", 
+                       hex::encode(&proto_execution_results.block_hash));
+                
+                self.execution_results_tx
+                    .send(proto_execution_results)
+                    .await
+                    .expect("Failed to send execution results to ClientReplyHandler");
+                
+                return Ok(RespType::NoResp);
+            }
+
+            #[cfg(not(feature = "dag"))]
+            crate::proto::rpc::proto_payload::Message::ExecutionResults(_proto_execution_results) => {
+                warn!("Received ExecutionResults in leader mode - ignoring");
                 return Ok(RespType::NoResp);
             }
 
@@ -546,8 +570,15 @@ impl<E: AppEngine + Send + Sync> ConsensusNode<E> {
             #[cfg(feature = "extra_2pc")]
             extra_2pc_phase_message_tx,
         );
-        let client_reply =
-            ClientReplyHandler::new(config.clone(), client_reply_rx, client_reply_command_rx);
+        let client_reply = ClientReplyHandler::new(
+            config.clone(),
+            client_reply_rx,
+            client_reply_command_rx,
+            #[cfg(feature = "dag")]
+            client.into(),
+            #[cfg(feature = "dag")]
+            execution_results_rx,
+        );
         let logserver = LogServer::new(
             config.clone(),
             logserver_client.into(),
@@ -699,6 +730,7 @@ impl<E: AppEngine + Send + Sync> ConsensusNode<E> {
         // Shared components channels (used by both DAG and tip cut consensus)
         let (client_reply_tx, client_reply_rx) = make_channel(_chan_depth);
         let (client_reply_command_tx, client_reply_command_rx) = make_channel(_chan_depth);
+        let (execution_results_tx, execution_results_rx) = make_channel(_chan_depth);
         let (app_tx, app_rx) = make_channel(_chan_depth);
         let (unlogged_tx, unlogged_rx) = make_channel(_chan_depth);
 
@@ -751,6 +783,7 @@ impl<E: AppEngine + Send + Sync> ConsensusNode<E> {
             dag_block_rx,
             dag_block_ack_rx,
             dag_tip_cut_tx,
+            execution_results_tx.clone(),
             vote_tx,
             view_change_tx,
             backfill_request_tx,
@@ -913,8 +946,13 @@ impl<E: AppEngine + Send + Sync> ConsensusNode<E> {
             extra_2pc_phase_message_tx,
         );
 
-        let client_reply =
-            ClientReplyHandler::new(config.clone(), client_reply_rx, client_reply_command_rx);
+        let client_reply = ClientReplyHandler::new(
+            config.clone(),
+            client_reply_rx,
+            client_reply_command_rx,
+            #[cfg(feature = "dag")]
+            client.into(),
+        );
 
         let logserver = LogServer::new(
             config.clone(),
