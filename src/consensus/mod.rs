@@ -77,6 +77,8 @@ pub struct ConsensusServerContext {
     #[cfg(feature = "dag")]
     block_ack_tx: Sender<(ProtoBlockAck, SenderType)>,
     #[cfg(feature = "dag")]
+    car_tx: Sender<(crate::proto::consensus::ProtoBlockCar, SenderType)>,
+    #[cfg(feature = "dag")]
     tip_cut_tx: Sender<(ProtoTipCut, SenderType)>,
     #[cfg(feature = "dag")]
     execution_results_tx: Sender<crate::proto::consensus::ProtoExecutionResults>,
@@ -120,6 +122,7 @@ impl PinnedConsensusServerContext {
         batch_proposal_tx: Sender<TxWithAckChanTag>,
         block_receiver_tx: Sender<(ProtoAppendBlock, SenderType)>,
         block_ack_tx: Sender<(ProtoBlockAck, SenderType)>,
+        car_tx: Sender<(crate::proto::consensus::ProtoBlockCar, SenderType)>,
         tip_cut_tx: Sender<(ProtoTipCut, SenderType)>,
         execution_results_tx: Sender<crate::proto::consensus::ProtoExecutionResults>,
         vote_receiver_tx: Sender<VoteWithSender>,
@@ -132,6 +135,7 @@ impl PinnedConsensusServerContext {
             batch_proposal_tx,
             block_receiver_tx,
             block_ack_tx,
+            car_tx,
             tip_cut_tx,
             execution_results_tx,
             vote_receiver_tx,
@@ -249,8 +253,15 @@ impl ServerContextType for PinnedConsensusServerContext {
 
             #[cfg(feature = "dag")]
             crate::proto::rpc::proto_payload::Message::BlockCar(proto_block_car) => {
-                // TODO: Implement BlockCAR handling
-                debug!("Received BlockCAR - not yet implemented");
+                // Forward to LaneStaging for CAR aggregation and tip cut formation
+                debug!("Received BlockCAR for block n={} from lane {}", 
+                       proto_block_car.n, proto_block_car.lane_id);
+                
+                self.car_tx
+                    .send((proto_block_car, sender))
+                    .await
+                    .expect("Failed to send BlockCAR to LaneStaging");
+                
                 return Ok(RespType::NoResp);
             }
 
@@ -712,6 +723,7 @@ impl<E: AppEngine + Send + Sync> ConsensusNode<E> {
 
         // DAG lane staging channels
         let (dag_block_ack_rx, dag_block_ack_rx_receiver) = make_channel(_chan_depth);
+        let (dag_car_tx, dag_car_rx) = make_channel(_chan_depth);
         let (dag_lane_staging_tx, dag_lane_staging_rx) = make_channel(_chan_depth);
         let (dag_lane_staging_query_tx, dag_lane_staging_query_rx) = make_channel(_chan_depth);
 
@@ -782,6 +794,7 @@ impl<E: AppEngine + Send + Sync> ConsensusNode<E> {
             batch_proposer_tx.clone(),
             dag_block_rx,
             dag_block_ack_rx,
+            dag_car_tx,
             dag_tip_cut_tx,
             execution_results_tx.clone(),
             vote_tx,
@@ -839,6 +852,7 @@ impl<E: AppEngine + Send + Sync> ConsensusNode<E> {
             dag_lane_staging_crypto,
             dag_lane_staging_rx,
             dag_block_ack_rx_receiver,
+            dag_car_rx,
             dag_lane_staging_query_rx,
             client_reply_command_tx.clone(),
             app_tx.clone(),
