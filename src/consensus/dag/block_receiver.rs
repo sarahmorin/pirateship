@@ -6,6 +6,8 @@
 /// - Maintains per-lane continuity tracking
 use std::{collections::HashMap, io::Error, sync::Arc};
 
+#[cfg(feature = "view_change")]
+use bincode::config;
 use log::{debug, info, warn};
 use prost::Message;
 use tokio::sync::{oneshot, Mutex};
@@ -123,26 +125,23 @@ impl BlockReceiver {
         dag_broadcaster_tx: Sender<SingleBlock>,
         lane_logserver_query_tx: Sender<LaneLogServerQuery>,
     ) -> Self {
-        let ret = Self {
+        #[cfg(feature = "view_change")]
+        let (view, config_num) = (0, 0);
+        #[cfg(not(feature = "view_change"))]
+        let (view, config_num) = (1, 1);
+
+        Self {
             config,
             crypto,
             client,
-            view: 0,
-            config_num: 0,
+            view: view,
+            config_num: config_num,
             block_rx,
             command_rx,
             dag_broadcaster_tx,
             lane_continuity: HashMap::new(),
             lane_logserver_query_tx,
-        };
-
-        #[cfg(not(feature = "view_change"))]
-        {
-            // TODO: Initialize view and config_num based on view_change feature
-            // For now, keeping initialization in struct construction
         }
-
-        ret
     }
 
     pub async fn run(block_receiver: Arc<Mutex<Self>>) {
