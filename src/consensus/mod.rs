@@ -219,16 +219,8 @@ impl ServerContextType for PinnedConsensusServerContext {
                     if proto_append_blocks.is_backfill_response {
                         // Extract sender name for lane identification
                         let (sender_name, _) = sender.to_name_and_sub_id();
-                        self.block_receiver_command_tx
-                            .send(BlockReceiverCommand::UseBackfillResponse(
-                                crate::proto::consensus::ProtoAppendBlockLane {
-                                    name: sender_name.clone(),
-                                    ab: Some(proto_append_blocks),
-                                },
-                                sender,
-                            ))
-                            .await
-                            .expect("Channel send error");
+                        warn!("Received is_backfill AppendBlocks message without AppendBlockLane wrapper from {}", sender_name);
+                        return Ok(RespType::NoResp);
                     } else {
                         self.block_receiver_tx
                             .send((proto_append_blocks, sender))
@@ -260,10 +252,17 @@ impl ServerContextType for PinnedConsensusServerContext {
                             .await
                             .expect("Channel send error");
                     } else {
-                        self.block_receiver_tx
-                            .send((proto_append_block_lane.ab.unwrap(), sender))
-                            .await
-                            .expect("Channel send error");
+                        warn!(
+                            "Received AppendBlockLane without is_backfill set from {:?}. Size: {}",
+                            sender,
+                            proto_append_block_lane.encoded_len()
+                        );
+                        return Ok(RespType::NoResp);
+                        // QUESTION: Should we handle these messages differently?
+                        // self.block_receiver_tx
+                        //     .send((proto_append_block_lane.ab.unwrap(), sender))
+                        //     .await
+                        //     .expect("Channel send error");
                     }
                 }
 
