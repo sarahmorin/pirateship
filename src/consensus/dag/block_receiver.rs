@@ -15,7 +15,11 @@ use tokio::sync::{oneshot, Mutex};
 use crate::{
     config::AtomicConfig,
     crypto::{CachedBlock, CryptoServiceConnector, FutureHash},
-    proto::{checkpoint::ProtoBackfillNack, consensus::ProtoAppendBlock, rpc::ProtoPayload},
+    proto::{
+        checkpoint::ProtoBackfillNack,
+        consensus::{ProtoAppendBlockLane, ProtoAppendBlocks},
+        rpc::ProtoPayload,
+    },
     rpc::{client::PinnedClient, MessageRef, SenderType},
     utils::{
         channel::{make_channel, Receiver, Sender},
@@ -28,7 +32,7 @@ use super::lane_logserver::LaneLogServerQuery;
 /// Command messages for BlockReceiver control
 pub enum BlockReceiverCommand {
     /// Process a backfill response
-    UseBackfillResponse(ProtoAppendBlock, SenderType),
+    UseBackfillResponse(ProtoAppendBlockLane, SenderType),
 }
 
 /// Metadata associated with an AppendBlock message
@@ -306,9 +310,28 @@ impl BlockReceiver {
 
     async fn handle_command(&mut self, cmd: BlockReceiverCommand) {
         match cmd {
-            BlockReceiverCommand::UseBackfillResponse(block, sender) => {
-                let (name, _) = sender.to_name_and_sub_id();
-                self.process_block(block, name).await;
+            BlockReceiverCommand::UseBackfillResponse(block_lane, sender) => {
+                // For backfill responses, use the lane_id from the message if present
+                // This allows any node to respond with blocks from any lane
+                let lane_id = if !block_lane.name.is_empty() {
+                    block_lane.name.clone()
+                } else {
+                    // Fallback to sender name for backward compatibility
+                    let (name, _) = sender.to_name_and_sub_id();
+                    warn!(
+                        "Backfill response missing lane_id, falling back to sender: {}",
+                        name
+                    );
+                    name
+                };
+                let ab = match block_lane.ab {
+                    Some(ab) => ab,
+                    None => {
+                        warn!("Backfill response missing AppendBlock");
+                        return;
+                    }
+                };
+                self.process_block(ab, lane_id).await;
             }
         }
     }
@@ -423,13 +446,11 @@ impl BlockReceiver {
 
         let my_name = self.config.get().net_config.name.clone();
 
-        // Use AppendBlockLane origin for DAG mode backfill
+        // Use AppendBlockLane origin for DAG mode backfill with lane hints
         let nack = ProtoBackfillNack {
-            hints: Some(
-                crate::proto::checkpoint::proto_backfill_nack::Hints::Blocks(
-                    crate::proto::checkpoint::ProtoBlockHintsWrapper { hints },
-                ),
-            ),
+            hints: Some(crate::proto::checkpoint::proto_backfill_nack::Hints::Lane(
+                hints,
+            )),
             last_index_needed,
             reply_name: my_name,
             origin: Some(crate::proto::checkpoint::proto_backfill_nack::Origin::Abl(
