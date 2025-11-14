@@ -31,7 +31,7 @@ use crate::{
     config::AtomicConfig,
     crypto::{CachedBlock, CryptoServiceConnector},
     proto::{
-        consensus::{HalfSerializedBlock, ProtoAppendBlock},
+        consensus::{HalfSerializedBlock, ProtoAppendBlocks},
         rpc::ProtoPayload,
     },
     rpc::{client::PinnedClient, server::LatencyProfile, PinnedMessage, SenderType},
@@ -374,14 +374,14 @@ impl DagBlockBroadcaster {
             None => (false, 0),
         };
 
-        let append_block = ProtoAppendBlock {
-            block: Some(HalfSerializedBlock {
+        let append_blocks = ProtoAppendBlocks {
+            serialized_blocks: vec![HalfSerializedBlock {
                 n: block.block.n,
                 view: block.block.view,
                 view_is_stable: block.block.view_is_stable,
                 config_num: block.block.config_num,
                 serialized_body: block.block_ser.clone(),
-            }),
+            }],
             commit_index: self.ci,
             view,
             view_is_stable,
@@ -390,8 +390,8 @@ impl DagBlockBroadcaster {
         };
 
         let rpc = ProtoPayload {
-            message: Some(crate::proto::rpc::proto_payload::Message::AppendBlock(
-                append_block,
+            message: Some(crate::proto::rpc::proto_payload::Message::AppendBlocks(
+                append_blocks,
             )),
         };
         let data = rpc.encode_to_vec();

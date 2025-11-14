@@ -42,7 +42,7 @@ use crate::{
         tip_cut_proposal,
     },
     proto::consensus::{
-        ProtoAppendBlock, ProtoBlockAck, ProtoBlockCar, ProtoExecutionResults, ProtoTipCut,
+        ProtoAppendBlocks, ProtoBlockAck, ProtoBlockCar, ProtoExecutionResults, ProtoTipCut,
     },
 };
 use app::{AppEngine, Application};
@@ -86,7 +86,7 @@ pub struct ConsensusServerContext {
 
     // DAG-specific channels
     #[cfg(feature = "dag")]
-    block_receiver_tx: Sender<(ProtoAppendBlock, SenderType)>,
+    block_receiver_tx: Sender<(ProtoAppendBlocks, SenderType)>,
     #[cfg(feature = "dag")]
     block_receiver_command_tx: Sender<BlockReceiverCommand>,
     #[cfg(feature = "dag")]
@@ -112,7 +112,7 @@ impl PinnedConsensusServerContext {
         vote_receiver_tx: Sender<VoteWithSender>,
         view_change_receiver_tx: Sender<(ProtoViewChange, SenderType)>,
         backfill_request_tx: Sender<ProtoBackfillNack>,
-        #[cfg(feature = "dag")] block_receiver_tx: Sender<(ProtoAppendBlock, SenderType)>,
+        #[cfg(feature = "dag")] block_receiver_tx: Sender<(ProtoAppendBlocks, SenderType)>,
         #[cfg(feature = "dag")] block_receiver_command_tx: Sender<BlockReceiverCommand>,
         #[cfg(feature = "dag")] block_ack_tx: Sender<(ProtoBlockAck, SenderType)>,
         #[cfg(feature = "dag")] car_tx: Sender<(ProtoBlockCar, SenderType)>,
@@ -213,20 +213,25 @@ impl ServerContextType for PinnedConsensusServerContext {
                 return Ok(RespType::NoResp);
             }
             // AppendBlock messages are routed to the BlockReceiver in DAG-mode, otherwise ignored
-            crate::proto::rpc::proto_payload::Message::AppendBlock(proto_append_block) => {
+            crate::proto::rpc::proto_payload::Message::AppendBlocks(proto_append_blocks) => {
                 #[cfg(feature = "dag")]
                 {
-                    if proto_append_block.is_backfill_response {
+                    if proto_append_blocks.is_backfill_response {
+                        // Extract sender name for lane identification
+                        let (sender_name, _) = sender.to_name_and_sub_id();
                         self.block_receiver_command_tx
                             .send(BlockReceiverCommand::UseBackfillResponse(
-                                proto_append_block,
+                                crate::proto::consensus::ProtoAppendBlockLane {
+                                    name: sender_name.clone(),
+                                    ab: Some(proto_append_blocks),
+                                },
                                 sender,
                             ))
                             .await
                             .expect("Channel send error");
                     } else {
                         self.block_receiver_tx
-                            .send((proto_append_block, sender))
+                            .send((proto_append_blocks, sender))
                             .await
                             .expect("Channel send error");
                     }
