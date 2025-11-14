@@ -243,6 +243,36 @@ impl ServerContextType for PinnedConsensusServerContext {
                 }
                 return Ok(RespType::NoResp);
             }
+            // AppendBlockLane messages are routed to the BlockReceiver in DAG-mode, otherwise ignored
+            crate::proto::rpc::proto_payload::Message::AppendBlockLane(proto_append_block_lane) => {
+                #[cfg(feature = "dag")]
+                {
+                    if proto_append_block_lane
+                        .ab
+                        .as_ref()
+                        .map_or(false, |ab| ab.is_backfill_response)
+                    {
+                        self.block_receiver_command_tx
+                            .send(BlockReceiverCommand::UseBackfillResponse(
+                                proto_append_block_lane,
+                                sender,
+                            ))
+                            .await
+                            .expect("Channel send error");
+                    } else {
+                        self.block_receiver_tx
+                            .send((proto_append_block_lane.ab.unwrap(), sender))
+                            .await
+                            .expect("Channel send error");
+                    }
+                }
+
+                #[cfg(not(feature = "dag"))]
+                {
+                    warn!("Received AppendBlockLane in non-DAG mode - ignoring");
+                }
+                return Ok(RespType::NoResp);
+            }
             // BlockAck messages are routed to the BlockAck handler in DAG-mode, otherwise ignored
             crate::proto::rpc::proto_payload::Message::BlockAck(proto_block_ack) => {
                 #[cfg(feature = "dag")]
