@@ -99,7 +99,7 @@ message ProtoAppendBlocks {
 // Append Block with Lane for backfill requests
 message ProtoAppendBlockLane {
     string name = 1;            // Name identifies lane
-    ProtoAppendBlock ab = 2;    // AppendBlock request
+    ProtoAppendBlocks ab = 2;    // AppendBlock request
 }
 
 // Block Acknowledgement for constructing PoA
