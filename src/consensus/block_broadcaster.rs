@@ -251,7 +251,8 @@ impl BlockBroadcaster {
             }
             #[cfg(feature = "dag")]
             BlockBroadcasterCommand::BroadcastTipCut(tipcut, view, view_is_stable, config_num) => {
-                self.process_my_tipcut(tipcut, view, view_is_stable, config_num).await?;
+                self.process_my_tipcut(tipcut, view, view_is_stable, config_num)
+                    .await?;
             }
         }
 
@@ -524,8 +525,6 @@ impl BlockBroadcaster {
         Ok(())
     }
 
-    // TODO: Implement evil behavior for DAG mode
-    #[cfg(not(feature = "dag"))]
     async fn maybe_act_evil(
         &mut self,
         names: Vec<String>,
@@ -702,12 +701,10 @@ impl BlockBroadcaster {
         config_num: u64,
     ) {
         let tip_count = tipcut.tips.len();
-        
+
         // Wrap tip cut in AppendEntries message
         let append_entry = ProtoAppendEntries {
-            entry: Some(crate::proto::consensus::proto_append_entries::Entry::Tipcut(
-                tipcut,
-            )),
+            entry: Some(crate::proto::consensus::proto_append_entries::Entry::Tipcut(tipcut)),
             commit_index: self.ci,
             view,
             view_is_stable,
