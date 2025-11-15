@@ -389,25 +389,6 @@ impl BlockBroadcaster {
         return 2 * f;
     }
 
-    fn get_car_broadcast_threshold(&self) -> usize {
-        let config = self.config.get();
-        let node_list_len = config.consensus_config.node_list.len();
-
-        // If using platforms, we need u+1 nodes to accept the CAR.
-        #[cfg(feature = "platforms")]
-        {
-            if node_list_len <= config.consensus_config.liveness_u as usize {
-                return 0;
-            }
-            let car_threshold = config.consensus_config.liveness_u as usize;
-            return car_threshold + 1;
-        }
-
-        // Default: f+1
-        let f = node_list_len / 3;
-        return f + 1;
-    }
-
     async fn process_other_block(&mut self, mut blocks: MultipartFork) -> Result<(), Error> {
         let _blocks = blocks.await_all().await;
         // info!("Await all finished!");
