@@ -175,7 +175,7 @@ impl Staging {
         }
         if n == last_entry.block_or_tc.n() + 1 {
             let parent = btc.parent();
-            return parent.eq(&last_entry.block_or_tc.parent());
+            return parent.eq(&last_entry.block_or_tc.digest());
         }
 
         self.pending_votes
