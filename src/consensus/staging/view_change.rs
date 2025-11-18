@@ -7,7 +7,12 @@ use log::{error, info, trace, warn};
 use prost::Message as _;
 
 #[cfg(feature = "dag")]
-use crate::proto::consensus::HalfSerializedTipCut;
+use crate::{
+    consensus::dag::{
+        block_sequencer::DagBlockSequencerCommand, tip_cut_proposal::TipCutProposalCommand,
+    },
+    proto::consensus::HalfSerializedTipCut,
+};
 use crate::{
     consensus::{
         block_broadcaster::BlockBroadcasterCommand, block_sequencer::BlockSequencerControlCommand,
@@ -116,6 +121,24 @@ impl Staging {
             .await
             .unwrap();
 
+        #[cfg(feature = "dag")]
+        self.tip_cut_proposer_command_tx
+            .send(TipCutProposalCommand::NewUnstableView(
+                self.view,
+                self.config_num,
+            ))
+            .await
+            .unwrap();
+
+        #[cfg(feature = "dag")]
+        self.dag_block_sequencer_command_tx
+            .send(DagBlockSequencerCommand::NewUnstableView(
+                self.view,
+                self.config_num,
+            ))
+            .await
+            .unwrap();
+
         let current_leader = self
             .config
             .get()
@@ -218,6 +241,15 @@ impl Staging {
             ))
             .await
             .unwrap();
+
+        #[cfg(feature = "dag")]
+        self.tip_cut_proposer_command_tx
+            .send(TipCutProposalCommand::NewViewMessage(
+                self.view,
+                self.config_num,
+            ))
+            .await
+            .unwrap();
         // This + signal to BlockBroadcaster about chosen fork means that the blocks will be fed back in with the NewView AE.
     }
 
@@ -243,6 +275,26 @@ impl Staging {
                 self.view,
                 self.config_num,
             ))
+            .await
+            .unwrap();
+
+        #[cfg(feature = "dag")]
+        self.tip_cut_proposer_command_tx
+            .send(TipCutProposalCommand::ViewStabilised(
+                self.view,
+                self.config_num,
+            ))
+            .await
+            .unwrap();
+
+        #[cfg(feature = "dag")]
+        self.dag_block_sequencer_command_tx
+            .send(
+                crate::consensus::dag::block_sequencer::DagBlockSequencerCommand::ViewStabilised(
+                    self.view,
+                    self.config_num,
+                ),
+            )
             .await
             .unwrap();
 

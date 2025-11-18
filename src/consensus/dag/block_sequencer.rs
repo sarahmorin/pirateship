@@ -45,12 +45,14 @@ use crate::{
 };
 
 use super::super::batch_proposal::{MsgAckChanWithTag, RawBatch};
+use super::block_broadcaster::DagBlockBroadcasterCommand;
 
 /// Control commands for the DAG block sequencer
 /// DAG dissemination layer doesn't need view change commands - it's view-agnostic
 pub enum DagBlockSequencerCommand {
-    // Currently no commands needed, but placeholder for future extensions
-    // e.g., UpdateLane, PauseProposal, ResumeProposal, etc.
+    // Maintain local view state to mirror consensus sequencer's minimal tracking
+    NewUnstableView(u64 /* view num */, u64 /* config num */),
+    ViewStabilised(u64 /* view num */, u64 /* config num */),
 }
 
 pub struct DagBlockSequencer {
@@ -67,6 +69,10 @@ pub struct DagBlockSequencer {
     crypto: CryptoServiceConnector,
     parent_hash_rx: FutureHash,
     seq_num: u64,
+    // Minimal view tracking for diagnostics/coordination; no consensus semantics here
+    view: u64,
+    config_num: u64,
+    view_is_stable: bool,
     force_sign_next_batch: bool,
     last_signed_seq_num: u64,
 
@@ -108,6 +114,9 @@ impl DagBlockSequencer {
             crypto,
             parent_hash_rx: FutureHash::None,
             seq_num: 0,
+            view: 0,
+            config_num: 0,
+            view_is_stable: false,
             force_sign_next_batch: false,
             last_signed_seq_num: 0,
             perf_counter_signed,
@@ -262,11 +271,11 @@ impl DagBlockSequencer {
         let block = ProtoBlock {
             n,
             parent: Vec::new(), // Will be filled in by crypto service with actual parent hash
-            view: 1,            // DAG dissemination doesn't use views
+            view: self.view,    // DAG doesn't need views, but we track it for AppCommands
             qc: Vec::new(), // No QCs in dissemination layer - CARs provide proof of availability
             fork_validation: Vec::new(), // No fork validation in dissemination layer
-            view_is_stable: true, // Always stable in DAG dissemination
-            config_num: 1,  // Fixed config in dissemination layer
+            view_is_stable: self.view_is_stable, // Always stable in DAG dissemination
+            config_num: self.config_num, // Fixed config in dissemination layer
             tx_list: batch,
             sig: Some(crate::proto::consensus::proto_block::Sig::NoSig(
                 DefferedSignature {},
@@ -303,8 +312,19 @@ impl DagBlockSequencer {
         trace!("DAG Sequenced block {}", n);
     }
 
-    async fn handle_control_command(&mut self, _cmd: DagBlockSequencerCommand) {
-        // Placeholder for future control commands
-        // DAG dissemination layer doesn't need view changes or other consensus control
+    async fn handle_control_command(&mut self, cmd: DagBlockSequencerCommand) {
+        // Only track local fields; do not alter sequencing behavior
+        match cmd {
+            DagBlockSequencerCommand::NewUnstableView(v, c) => {
+                self.view = v;
+                self.config_num = c;
+                self.view_is_stable = false;
+            }
+            DagBlockSequencerCommand::ViewStabilised(v, c) => {
+                self.view = v;
+                self.config_num = c;
+                self.view_is_stable = true;
+            }
+        }
     }
 }

@@ -1,3 +1,4 @@
+use std::time::Duration;
 /// Tip Cut Proposal Module for DAG Consensus
 ///
 /// This module is responsible for proposing tip cuts in the DAG.
@@ -14,15 +15,15 @@
 /// - Only the current leader proposes tip cuts
 /// - View changes update leadership via command channel
 /// - Non-leaders skip proposal logic
-use std::sync::Arc;
-use std::time::Duration;
+use std::{cmp, sync::Arc};
 
-use log::{debug, error, info, trace};
+use log::{debug, error, info, trace, warn};
 use tokio::sync::{oneshot, Mutex};
 
 use crate::{
     config::AtomicConfig,
-    proto::consensus::{DefferedSignature, ProtoTipCut},
+    crypto::HashType,
+    proto::consensus::{DefferedSignature, ProtoTipCut, ProtoTipCutValidation},
     utils::{
         channel::{Receiver, Sender},
         timer::ResettableTimer,
@@ -33,14 +34,14 @@ use super::lane_staging::{LaneStagingQuery, TipCut};
 
 /// Commands to control TipCutProposal behavior
 pub enum TipCutProposalCommand {
-    /// Update leadership status and current leader name
-    UpdateLeadership(bool, String), // (am_i_leader, leader_name)
-
-    /// Update view number
-    UpdateView(u64),
-
-    /// Update view stability
-    UpdateViewStability(bool),
+    NewUnstableView(u64 /* view num */, u64 /* config num */), // View changed to a new view, it is not stable, so don't propose new blocks.
+    ViewStabilised(u64 /* view num */, u64 /* config num */), // View is stable now, if I am the leader in this view, propose new blocks.
+    NewViewMessage(
+        u64, /* view num */
+        u64, /* config num */
+             // HashType, /* new parent hash */
+             // u64,      /* new seq num */
+    ), // Change view to unstable, use ProtoForkValidation to propose a new view message.
 }
 
 /// TipCutProposal is responsible for periodically proposing tip cuts.
@@ -148,6 +149,7 @@ impl TipCutProposal {
         let mut cmd = None;
 
         tokio::select! {
+            biased;
             _cmd = self.cmd_rx.recv() => {
                 cmd = _cmd;
             },
@@ -166,7 +168,7 @@ impl TipCutProposal {
         // Check if I am the leader and propose a tip cut
         if timer_tick {
             // If timer ticked, propose tip cut based on timer
-            if self.i_am_leader {
+            if self.i_am_leader() {
                 if let Err(_) = self.propose_tip_cut(false).await {
                     error!("Failed to propose tip cut");
                 }
@@ -179,7 +181,7 @@ impl TipCutProposal {
             return Ok(());
         } else if self.config.get().dag_config.tip_cut_max_cars > 0 {
             // Otherwise, check if enough CARs have been seen to propose tip cut
-            if self.i_am_leader {
+            if self.i_am_leader() {
                 if let Err(_) = self.propose_tip_cut(true).await {
                     error!("Failed to propose tip cut");
                 }
@@ -197,34 +199,29 @@ impl TipCutProposal {
     }
 
     fn i_am_leader(&self) -> bool {
-        self.config.get().net_config.name == self.current_leader
+        let config = self.config.get();
+        let leader = config.consensus_config.get_leader_for_view(self.view);
+        leader == config.net_config.name
     }
 
-    fn handle_command(&mut self, command: TipCutProposalCommand) {
-        match command {
-            TipCutProposalCommand::UpdateLeadership(am_i_leader, leader_name) => {
-                let was_leader = self.i_am_leader;
-                self.i_am_leader = am_i_leader;
-                self.current_leader = leader_name.clone();
-
-                if was_leader != am_i_leader {
-                    info!(
-                        "Leadership changed: i_am_leader={}, new_leader={}",
-                        am_i_leader, leader_name
-                    );
-                }
+    fn handle_command(&mut self, cmd: TipCutProposalCommand) {
+        match cmd {
+            // Follow the changes, no questions asked!
+            TipCutProposalCommand::NewUnstableView(v, c) => {
+                self.view = v;
+                self.config_num = c;
+                self.view_is_stable = false;
             }
-            TipCutProposalCommand::UpdateView(view) => {
-                if view != self.view {
-                    info!("View changed: {} -> {}", self.view, view);
-                    self.view = view;
-                }
+            TipCutProposalCommand::ViewStabilised(v, c) => {
+                self.view = v;
+                self.config_num = c;
+                self.view_is_stable = true;
             }
-            TipCutProposalCommand::UpdateViewStability(stable) => {
-                if stable != self.view_is_stable {
-                    debug!("View stability changed: {}", stable);
-                    self.view_is_stable = stable;
-                }
+            TipCutProposalCommand::NewViewMessage(v, c) => {
+                warn!("Request for new view message: view: {} config: {}", v, c);
+                self.view = v;
+                self.config_num = c;
+                self.view_is_stable = false;
             }
         }
     }

@@ -23,7 +23,7 @@ use std::{
     sync::Arc,
 };
 
-use log::{debug, error, info, trace};
+use log::{debug, error, info, trace, warn};
 use prost::Message;
 use tokio::sync::{oneshot, Mutex};
 
@@ -51,6 +51,7 @@ pub enum DagBlockBroadcasterCommand {
     UpdateCI(u64),
     /// Provide a lane prefix to be batched with the next locally proposed block
     /// Mirrors traditional broadcaster's NextAEForkPrefix behavior
+    // TODO: Remove this if we never use it
     NextAppendBlocksPrefix(Vec<oneshot::Receiver<Result<CachedBlock, Error>>>),
 }
 
@@ -150,7 +151,10 @@ impl DagBlockBroadcaster {
             }
         }
 
-        info!("DAG Block Broadcaster worker exited.");
+        info!(
+            "DAG Block Broadcaster worker exited. Total work items processed: {}",
+            total_work
+        );
     }
 
     fn perf_register(&mut self, entry: u64) {
@@ -213,12 +217,14 @@ impl DagBlockBroadcaster {
                 self.process_other_single_block(blocks).await?;
             },
 
+            // Control channel is optional in DAG wiring; if it's closed, keep running without it
             cmd = self.control_command_rx.recv() => {
-                if cmd.is_none() {
-                    return Err(Error::new(ErrorKind::BrokenPipe, "control_command_rx channel closed"));
+                if let Some(cmd) = cmd {
+                    self.handle_control_command(cmd).await?;
+                } else {
+                    warn!("DAG Block Broadcaster control channel closed; continuing without control commands");
                 }
-                self.handle_control_command(cmd.unwrap()).await?;
-            }
+            },
         }
 
         Ok(())
@@ -288,6 +294,12 @@ impl DagBlockBroadcaster {
         Ok(())
     }
 
+    fn i_am_leader(&self, view: u64) -> bool {
+        let config = self.config.get();
+        let leader = config.consensus_config.get_leader_for_view(view);
+        leader == config.net_config.name
+    }
+
     async fn process_my_block(&mut self, block: CachedBlock) -> Result<(), Error> {
         debug!("Processing my block {}", block.block.n);
         let perf_entry = block.block.n;
@@ -345,7 +357,7 @@ impl DagBlockBroadcaster {
                 block.block.n,
                 view,
                 view_is_stable,
-                true, // My block
+                self.i_am_leader(view),
                 block.block.tx_list.len(),
                 block.block_hash.clone(),
             ))
@@ -380,7 +392,7 @@ impl DagBlockBroadcaster {
                 cached_block.block.n,
                 view,
                 view_is_stable,
-                false, // Not my block
+                self.i_am_leader(view),
                 cached_block.block.tx_list.len(),
                 cached_block.block_hash.clone(),
             ))

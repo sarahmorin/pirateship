@@ -555,7 +555,7 @@ impl<E: AppEngine + Send + Sync> ConsensusNode<E> {
         #[cfg(feature = "dag")]
         let (dag_block_sequencer_tx, dag_block_sequencer_rx) = make_channel(_chan_depth);
         #[cfg(feature = "dag")]
-        let (_dag_block_sequencer_control_command_tx, dag_block_sequencer_control_command_rx) =
+        let (dag_block_sequencer_command_tx, dag_block_sequencer_command_rx) =
             make_channel(_chan_depth);
         // DAG Block Receiver (dissemination - DAG)
         #[cfg(feature = "dag")]
@@ -571,7 +571,7 @@ impl<E: AppEngine + Send + Sync> ConsensusNode<E> {
         #[cfg(feature = "dag")]
         let (dag_other_block_tx, dag_other_block_rx) = make_channel(_chan_depth);
         #[cfg(feature = "dag")]
-        let (_dag_broadcaster_control_command_tx, dag_broadcaster_control_command_rx) =
+        let (dag_block_broadcaster_command_tx, dag_block_broadcaster_command_rx) =
             make_channel(_chan_depth);
         // DAG Lane Staging (dissemination - DAG)
         #[cfg(feature = "dag")]
@@ -593,7 +593,7 @@ impl<E: AppEngine + Send + Sync> ConsensusNode<E> {
         #[cfg(feature = "dag")]
         let (tip_cut_proposal_tx, tip_cut_proposal_rx) = make_channel(_chan_depth);
         #[cfg(feature = "dag")]
-        let (_tip_cut_proposal_cmd_tx, tip_cut_proposal_cmd_rx) = make_channel(_chan_depth);
+        let (tip_cut_proposal_cmd_tx, tip_cut_proposal_cmd_rx) = make_channel(_chan_depth);
         let (block_broadcaster_command_tx, _block_broadcaster_command_rx) =
             make_channel(_chan_depth);
 
@@ -679,7 +679,7 @@ impl<E: AppEngine + Send + Sync> ConsensusNode<E> {
         #[cfg(feature = "dag")]
         let dag_block_sequencer = dag::block_sequencer::DagBlockSequencer::new(
             config.clone(),
-            dag_block_sequencer_control_command_rx,
+            dag_block_sequencer_command_rx,
             dag_block_sequencer_rx,
             dag_block_broadcaster_tx.clone(),
             client_reply_tx.clone(),
@@ -694,7 +694,7 @@ impl<E: AppEngine + Send + Sync> ConsensusNode<E> {
             dag_block_broadcaster_crypto2,
             dag_block_broadcaster_rx,
             dag_other_block_rx,
-            dag_broadcaster_control_command_rx,
+            dag_block_broadcaster_command_rx,
             dag_block_broadcaster_storage,
             lane_staging_tx,
             dag_block_receiver_command_tx.clone(),
@@ -807,6 +807,12 @@ impl<E: AppEngine + Send + Sync> ConsensusNode<E> {
             logserver_tx,
             #[cfg(feature = "dag")]
             lane_logserver_query_tx.clone(),
+            #[cfg(feature = "dag")]
+            tip_cut_proposal_cmd_tx,
+            #[cfg(feature = "dag")]
+            dag_block_sequencer_command_tx,
+            #[cfg(feature = "dag")]
+            dag_block_broadcaster_command_tx,
             #[cfg(feature = "extra_2pc")]
             extra_2pc_command_tx,
             #[cfg(feature = "extra_2pc")]

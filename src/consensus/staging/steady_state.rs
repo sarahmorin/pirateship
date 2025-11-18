@@ -923,6 +923,9 @@ impl Staging {
             .await
             .unwrap();
 
+        // TODO: Also update dag_block_broadcaster here if dag feature is enabled.
+        // Should the CI be per-lane??
+
         #[cfg(not(feature = "dag"))]
         let blocks = {
             let committed_blocks = self

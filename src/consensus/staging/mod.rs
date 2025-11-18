@@ -41,15 +41,18 @@ use super::{
 };
 
 #[cfg(feature = "dag")]
-use crate::consensus::dag::lane_logserver::LaneLogServerQuery;
-#[cfg(feature = "dag")]
-use crate::consensus::dag::sort::{fetch_and_sort_tipcut_blocks, TipCutSortError};
-#[cfg(feature = "dag")]
-use crate::crypto::CachedTipCut;
-#[cfg(feature = "dag")]
-use crate::proto::consensus::ProtoBlockCar;
-#[cfg(feature = "dag")]
-use crate::utils::channel::make_channel;
+use crate::{
+    consensus::dag::{
+        block_broadcaster::DagBlockBroadcasterCommand,
+        block_sequencer::DagBlockSequencerCommand,
+        lane_logserver::LaneLogServerQuery,
+        sort::{fetch_and_sort_tipcut_blocks, TipCutSortError},
+        tip_cut_proposal::TipCutProposalCommand,
+    },
+    crypto::CachedTipCut,
+    proto::consensus::ProtoBlockCar,
+    utils::channel::make_channel,
+};
 
 pub(super) mod fork_choice;
 pub(super) mod steady_state;
@@ -169,6 +172,12 @@ pub struct Staging {
     lane_logserver_query_tx: Sender<LaneLogServerQuery>,
     #[cfg(feature = "dag")]
     last_lane_seq: HashMap<String, u64>,
+    #[cfg(feature = "dag")]
+    tip_cut_proposer_command_tx: Sender<TipCutProposalCommand>,
+    #[cfg(feature = "dag")]
+    dag_block_sequencer_command_tx: Sender<DagBlockSequencerCommand>,
+    #[cfg(feature = "dag")]
+    dag_block_broadcaster_command_tx: Sender<DagBlockBroadcasterCommand>,
 }
 
 impl Staging {
@@ -189,6 +198,11 @@ impl Staging {
         batch_proposer_command_tx: Sender<BatchProposerCommand>,
         logserver_tx: Sender<LogServerCommand>,
         #[cfg(feature = "dag")] lane_logserver_query_tx: Sender<LaneLogServerQuery>,
+        #[cfg(feature = "dag")] tip_cut_proposer_command_tx: Sender<TipCutProposalCommand>,
+        #[cfg(feature = "dag")] dag_block_sequencer_command_tx: Sender<DagBlockSequencerCommand>,
+        #[cfg(feature = "dag")] dag_block_broadcaster_command_tx: Sender<
+            DagBlockBroadcasterCommand,
+        >,
 
         #[cfg(feature = "extra_2pc")] two_pc_command_tx: Sender<TwoPCCommand>,
 
@@ -248,6 +262,12 @@ impl Staging {
             logserver_tx,
             #[cfg(feature = "dag")]
             lane_logserver_query_tx,
+            #[cfg(feature = "dag")]
+            tip_cut_proposer_command_tx,
+            #[cfg(feature = "dag")]
+            dag_block_sequencer_command_tx,
+            #[cfg(feature = "dag")]
+            dag_block_broadcaster_command_tx,
 
             __vc_retry_num: 0,
             __storage_ack_buffer: VecDeque::new(),
