@@ -624,13 +624,88 @@ impl LogServer {
     #[cfg(feature = "dag")]
     async fn handle_query(&mut self, query: LogServerQuery) {
         match query {
-            LogServerQuery::CheckHash(_, _, sender) => {
-                // Not supported in DAG mode (uses tip cut hashes instead)
-                let _ = sender.send(false).await;
+            LogServerQuery::CheckHash(n, hsh, sender) => {
+                if n == 0 {
+                    sender.send(true).await.unwrap();
+                    return;
+                }
+
+                let tipcut = match self.get_tipcut(n).await {
+                    Some(tipcut) => tipcut,
+                    None => {
+                        error!(
+                            "TipCut {} not found, last_n seen: {}",
+                            n,
+                            self.log.back().map_or(0, |tipcut| tipcut.tipcut.n)
+                        );
+                        sender.send(false).await.unwrap();
+                        return;
+                    }
+                };
+
+                sender.send(tipcut.tipcut_hash.eq(&hsh)).await.unwrap();
             }
-            LogServerQuery::GetHints(_, sender) => {
-                // Hints logic for DAG blocks not yet implemented
-                let _ = sender.send(Vec::new()).await;
+            LogServerQuery::GetHints(last_needed_n, sender) => {
+                // Starting from last_needed_n,
+                // Include last_needed_n, last_needed_n + 1000, last_needed_n + 2000, ..., until last_needed_n + 10000,
+                // Then include last_needed_n + 10000, last_needed_n + 20000, ..., until last_needed_n + 100000,
+                // and so on until we reach last_n. Also include the last_n.
+
+                use crate::consensus::dag::tip_cut_proposal;
+
+                const JUMP_START: u64 = 1000;
+                const JUMP_MULTIPLIER: u64 = 10;
+
+                let mut hints = Vec::new();
+
+                let last_n = self.log.back().map_or(0, |tipcut| tipcut.tipcut.n);
+                let mut curr_n = last_needed_n;
+                let mut curr_jump = JUMP_START;
+                let mut curr_jump_used_for = 0;
+
+                if curr_n == 0 {
+                    curr_n = 1;
+                }
+
+                while curr_n < last_n {
+                    let tipcut = match self.get_tipcut(curr_n).await {
+                        Some(tipcut) => tipcut,
+                        None => {
+                            break;
+                        }
+                    };
+                    hints.push(ProtoBlockHint {
+                        block_n: tipcut.tipcut.n,
+                        digest: tipcut.tipcut_hash.clone(),
+                    });
+
+                    curr_n += curr_jump;
+                    curr_jump_used_for += 1;
+                    if curr_jump_used_for >= JUMP_MULTIPLIER {
+                        curr_jump *= JUMP_MULTIPLIER;
+                        curr_jump_used_for = 0;
+                    }
+                }
+
+                // Also add last_n.
+                if last_n > 0 {
+                    let tipcut = match self.get_tipcut(last_n).await {
+                        Some(tipcut) => tipcut,
+                        None => {
+                            // This should never happen.
+                            panic!("TipCut {} not found", last_n);
+                        }
+                    };
+                    hints.push(ProtoBlockHint {
+                        block_n: tipcut.tipcut.n,
+                        digest: tipcut.tipcut_hash.clone(),
+                    });
+                }
+
+                let len = hints.len();
+
+                let res = sender.send(hints).await;
+                info!("Sent hints size {}, result = {:?}", len, res);
             }
         }
     }
