@@ -171,7 +171,9 @@ pub fn serialize_proto_tipcut_prefilled(mut tipcut: ProtoTipCut) -> Vec<u8> {
 
 #[cfg(feature = "dag")]
 pub fn get_parent_hash_in_proto_tipcut_ser(buf: &Vec<u8>) -> Option<HashType> {
-    if buf.len() < DIGEST_LENGTH + SIGNATURE_LENGTH { return None; }
+    if buf.len() < DIGEST_LENGTH + SIGNATURE_LENGTH {
+        return None;
+    }
     Some(buf[SIGNATURE_LENGTH..SIGNATURE_LENGTH + DIGEST_LENGTH].to_vec())
 }
 
@@ -185,9 +187,13 @@ pub fn deserialize_proto_tipcut(bytes: &[u8]) -> Result<ProtoTipCut, DecodeError
     let sig = &bytes[..SIGNATURE_LENGTH];
     let sig_is_null = sig.iter().all(|&x| x == 0);
     if sig_is_null {
-        tipcut.sig = Some(crate::proto::consensus::proto_tip_cut::Sig::NoSig(DefferedSignature{}));
+        tipcut.sig = Some(crate::proto::consensus::proto_tip_cut::Sig::NoSig(
+            DefferedSignature {},
+        ));
     } else {
-        tipcut.sig = Some(crate::proto::consensus::proto_tip_cut::Sig::ProposerSig(sig.to_vec()));
+        tipcut.sig = Some(crate::proto::consensus::proto_tip_cut::Sig::ProposerSig(
+            sig.to_vec(),
+        ));
     }
     Ok(tipcut)
 }

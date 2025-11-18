@@ -45,7 +45,6 @@ use crate::{
 };
 
 use super::super::batch_proposal::{MsgAckChanWithTag, RawBatch};
-use super::block_broadcaster::DagBlockBroadcasterCommand;
 
 /// Control commands for the DAG block sequencer
 /// DAG dissemination layer doesn't need view change commands - it's view-agnostic

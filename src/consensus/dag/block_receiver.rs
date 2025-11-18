@@ -284,7 +284,6 @@ impl BlockReceiver {
                 }
             });
 
-            // FIXME: Update broadcaster to send a lane instead of one block at a time
             // Forward to broadcaster
             let single_block = SingleBlock {
                 block_future: result_rx,
