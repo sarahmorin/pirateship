@@ -33,6 +33,7 @@ use crate::{
 use super::lane_staging::{LaneStagingQuery, TipCut};
 
 /// Commands to control TipCutProposal behavior
+#[derive(Debug, Clone)]
 pub enum TipCutProposalCommand {
     NewUnstableView(u64 /* view num */, u64 /* config num */), // View changed to a new view, it is not stable, so don't propose new blocks.
     ViewStabilised(u64 /* view num */, u64 /* config num */), // View is stable now, if I am the leader in this view, propose new blocks.
