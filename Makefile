@@ -68,6 +68,10 @@ lucky_raft_logger:
 signed_raft_logger:
 	CC=clang CXX=clang++ cargo build --release --features signed_raft,app_logger,storage --no-default-features
 
+.PHONY: dag_signed_raft_logger
+dag_signed_raft_logger:
+	CC=clang CXX=clang++ cargo build --release --features signed_raft,app_logger,storage --no-default-features
+
 
 .PHONY: engraft_logger
 engraft_logger:
