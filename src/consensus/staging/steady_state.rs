@@ -775,7 +775,7 @@ impl Staging {
 
         #[cfg(feature = "no_qc")]
         {
-            if this_is_final_block {
+            if this_is_final {
                 self.do_byzantine_commit(self.bci, self.ci).await;
             }
         }
