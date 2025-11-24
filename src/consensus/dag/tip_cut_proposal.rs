@@ -93,30 +93,30 @@ impl TipCutProposal {
 
         // Determine initial leadership
         #[cfg(feature = "view_change")]
-        let (view, i_am_leader, current_leader) = {
+        let (view, i_am_leader, current_leader, view_is_stable, config_num) = {
             let my_name = &config_snapshot.net_config.name;
             let leader = config_snapshot.consensus_config.get_leader_for_view(0);
-            (0, leader == *my_name, leader)
+            (0, leader == *my_name, leader, false, 0)
         };
 
         #[cfg(not(feature = "view_change"))]
-        let (view, i_am_leader, current_leader) = {
+        let (view, i_am_leader, current_leader, view_is_stable, config_num) = {
             let my_name = &config_snapshot.net_config.name;
             let leader = config_snapshot.consensus_config.get_leader_for_view(1);
-            (1, leader == *my_name, leader)
+            (1, leader == *my_name, leader, true, 1)
         };
 
         info!(
-            "TipCutProposal initialized: view={}, i_am_leader={}, leader={}",
-            view, i_am_leader, current_leader
+            "TipCutProposal initialized: view={}, i_am_leader={}, leader={}, view_is_stable={}, config_num={}",
+            view, i_am_leader, current_leader, view_is_stable, config_num
         );
 
         Self {
             config,
             ci: 0,
             view,
-            view_is_stable: false,
-            config_num: 0,
+            view_is_stable,
+            config_num,
             i_am_leader,
             current_leader,
             tip_cut_timer,
@@ -206,6 +206,7 @@ impl TipCutProposal {
     }
 
     fn handle_command(&mut self, cmd: TipCutProposalCommand) {
+        info!("TipCutProposal received command: {:?}", cmd);
         match cmd {
             // Follow the changes, no questions asked!
             TipCutProposalCommand::NewUnstableView(v, c) => {
@@ -229,6 +230,10 @@ impl TipCutProposal {
 
     /// Query lane_staging for current tip cut and broadcast it to all nodes.
     async fn propose_tip_cut(&mut self, use_threshold: bool) -> Result<(), ()> {
+        info!(
+            "Proposing tip cut for view {} (ci={}), use_threshold={}",
+            self.view, self.ci, use_threshold
+        );
         // Query LaneStaging for the current tip cut
         let tip_cut = match self.query_tip_cut().await? {
             Some(tc) => tc,
@@ -246,7 +251,7 @@ impl TipCutProposal {
 
         // If using threshold-based proposal, check if enough CARs are present
         if use_threshold && tip_cut.cars.len() < self.tip_cut_max_cars {
-            debug!(
+            info!(
                 "Not enough CARs for tip cut proposal: have {}, need {}",
                 tip_cut.cars.len(),
                 self.tip_cut_max_cars

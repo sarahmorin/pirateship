@@ -50,6 +50,7 @@ use super::super::batch_proposal::{MsgAckChanWithTag, RawBatch};
 /// DAG dissemination layer doesn't need view change commands - it's view-agnostic
 pub enum DagBlockSequencerCommand {
     // Maintain local view state to mirror consensus sequencer's minimal tracking
+    // NewView(u64 /* view num */, u64 /* config num */),
     NewUnstableView(u64 /* view num */, u64 /* config num */),
     ViewStabilised(u64 /* view num */, u64 /* config num */),
 }
@@ -103,6 +104,17 @@ impl DagBlockSequencer {
         let perf_counter_unsigned =
             RefCell::new(PerfCounter::new("DagBlockSequencerUnsigned", &event_order));
 
+        let mut view = 0;
+        let mut config_num = 0;
+        let mut view_is_stable = false;
+
+        #[cfg(not(feature = "view_change"))]
+        {
+            view_is_stable = true;
+            view = 1;
+            config_num = 1;
+        }
+
         Self {
             config,
             control_command_rx,
@@ -113,9 +125,9 @@ impl DagBlockSequencer {
             crypto,
             parent_hash_rx: FutureHash::None,
             seq_num: 0,
-            view: 0,
-            config_num: 0,
-            view_is_stable: false,
+            view: view,
+            config_num: config_num,
+            view_is_stable: view_is_stable,
             force_sign_next_batch: false,
             last_signed_seq_num: 0,
             perf_counter_signed,
@@ -207,16 +219,16 @@ impl DagBlockSequencer {
                 // Signature timer expired - force signing next batch
                 self.force_sign_next_batch = true;
             },
+            cmd = self.control_command_rx.recv() => {
+                if cmd.is_some() {
+                    self.handle_control_command(cmd.unwrap()).await;
+                }
+            },
             batch_and_client_reply = self.batch_rx.recv() => {
                 if let Some((batch, client_reply)) = batch_and_client_reply {
                     let perf_entry = self.seq_num + 1; // Projected seq num for perf tracking
                     self.perf_register(perf_entry);
                     self.handle_new_batch(batch, client_reply, perf_entry).await;
-                }
-            },
-            cmd = self.control_command_rx.recv() => {
-                if cmd.is_some() {
-                    self.handle_control_command(cmd.unwrap()).await;
                 }
             },
         }
@@ -325,5 +337,10 @@ impl DagBlockSequencer {
                 self.view_is_stable = true;
             }
         }
+
+        debug!(
+            "DAG Block Sequencer updated view to {}, config {}, stable: {}",
+            self.view, self.config_num, self.view_is_stable
+        );
     }
 }
