@@ -231,7 +231,7 @@ impl ClientConfig {
 
             #[cfg(feature = "dag")]
             dag_config: DAGConfig {
-                tip_cut_delay_ms: 500,
+                tip_cut_delay_ms: 100,
                 tip_cut_max_cars: 10,
             },
 
