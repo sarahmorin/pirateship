@@ -1210,9 +1210,9 @@ impl LaneStaging {
         }
 
         // Return None if we have no CARs yet
-        if cars.is_empty() {
-            return None;
-        }
+        // if cars.is_empty() {
+        //     return None;
+        // }
 
         Some(TipCut {
             cars,

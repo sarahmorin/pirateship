@@ -239,10 +239,10 @@ impl TipCutProposal {
         };
 
         // Check if tip cut is valid (has at least one CAR)
-        if tip_cut.cars.is_empty() {
-            debug!("Tip cut is empty, skipping proposal");
-            return Ok(());
-        }
+        // if tip_cut.cars.is_empty() {
+        //     // debug!("Tip cut is empty, skipping proposal");
+        //     // return Ok(());
+        // }
 
         // If using threshold-based proposal, check if enough CARs are present
         if use_threshold && tip_cut.cars.len() < self.tip_cut_max_cars {
