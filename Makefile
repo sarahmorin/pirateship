@@ -70,7 +70,7 @@ signed_raft_logger:
 
 .PHONY: dag_signed_raft_logger
 dag_signed_raft_logger:
-	CC=clang CXX=clang++ cargo build --release --features signed_raft,app_logger,storage --no-default-features
+	CC=clang CXX=clang++ cargo build --release --features signed_raft,app_logger,storage,dag --no-default-features
 
 
 .PHONY: engraft_logger
