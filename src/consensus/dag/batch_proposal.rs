@@ -93,7 +93,7 @@ impl BatchProposer {
             client_reply_tx,
             unlogged_tx,
             perf_counter,
-            make_new_batches: false,
+            make_new_batches: true,
             current_leader: String::new(),
             cmd_rx,
             last_batch_proposed: Instant::now(),
