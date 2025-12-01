@@ -605,6 +605,7 @@ impl<E: AppEngine + Send + Sync> ConsensusNode<E> {
 
         // Crypto and Storage connectors
         let block_maker_crypto = crypto.get_connector();
+        let block_maker_storage = storage.get_connector(block_maker_crypto.clone());
         let block_broadcaster_crypto = crypto.get_connector();
         let block_broadcaster_storage = storage.get_connector(block_broadcaster_crypto);
         let block_broadcaster_crypto2 = crypto.get_connector();
@@ -615,6 +616,8 @@ impl<E: AppEngine + Send + Sync> ConsensusNode<E> {
         let pacemaker_crypto = crypto.get_connector();
         #[cfg(feature = "dag")]
         let dag_block_sequencer_crypto = crypto.get_connector();
+        #[cfg(feature = "dag")]
+        let dag_block_sequencer_storage = storage.get_connector(dag_block_sequencer_crypto.clone());
         #[cfg(feature = "dag")]
         let dag_block_broadcaster_crypto = crypto.get_connector();
         #[cfg(feature = "dag")]
@@ -683,6 +686,7 @@ impl<E: AppEngine + Send + Sync> ConsensusNode<E> {
             dag_block_sequencer_rx,
             dag_block_broadcaster_tx.clone(),
             client_reply_tx.clone(),
+            dag_block_sequencer_storage,
             dag_block_sequencer_crypto,
         );
 
@@ -772,6 +776,7 @@ impl<E: AppEngine + Send + Sync> ConsensusNode<E> {
             qc_rx,
             block_broadcaster_tx.clone(),
             client_reply_tx.clone(),
+            block_maker_storage,
             block_maker_crypto,
             block_broadcaster_command_tx.clone(),
         );

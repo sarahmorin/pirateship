@@ -261,6 +261,7 @@ pub struct CryptoService {
 
 /// Every task that wants to use CryptoService must use it through this Connector.
 /// The connector must be created and passed down to the tasks by the main thread (that created the crypto service)
+#[derive(Clone)]
 pub struct CryptoServiceConnector {
     cmd_txs: Vec<Sender<CryptoServiceCommand>>,
     round_robin: usize,

@@ -387,6 +387,7 @@ impl Staging {
                     return Err(())
                 }
                 let proposal = msg.unwrap();
+                debug!("Staging received proposal: n={}, this_is_final={}, i_am_leader={}", proposal.entry.n(), proposal.this_is_final, i_am_leader);
                 if i_am_leader {
                     self.process_btc_as_leader(
                         proposal.entry,
@@ -408,8 +409,10 @@ impl Staging {
                     return Err(())
                 }
                 let vote = vote.unwrap();
+                debug!("📬 Staging received VOTE message, i_am_leader={}", i_am_leader);
                 if i_am_leader {
                     let (sender_name, _) = vote.0.to_name_and_sub_id();
+                    debug!("📬 Leader forwarding vote from {} for verification", sender_name);
                     self.verify_and_process_vote(sender_name, vote.1).await?;
                 } else {
                     warn!("Received vote while being a follower");

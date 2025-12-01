@@ -203,6 +203,7 @@ impl BlockBroadcaster {
                     }
                     #[cfg(feature = "dag")]
                     BroadcasterMessage::TipCut(tipcut) => {
+                        debug!("BlockBroadcaster received TipCut message, processing...");
                         self.process_other_entry(tipcut).await?;
                     }
                 }
@@ -269,7 +270,12 @@ impl BlockBroadcaster {
         let storage_ack = match entry {
             BlockOrTipCut::Block(block) => self.storage.put_block(block).await,
             #[cfg(feature = "dag")]
-            BlockOrTipCut::TipCut(tipcut) => self.storage.put_tipcut(tipcut).await,
+            BlockOrTipCut::TipCut(tipcut) => {
+                debug!("[STORE] BlockBroadcaster calling storage.put_tipcut for n={}", tipcut.tipcut.n);
+                let ack = self.storage.put_tipcut(tipcut).await;
+                debug!("[STORE] BlockBroadcaster received storage_ack receiver for n={}", tipcut.tipcut.n);
+                ack
+            },
         };
         self.perf_add_event(perf_entry, "Store block/tipcut");
         // info!("Stored {}", block.block.n);
@@ -278,6 +284,7 @@ impl BlockBroadcaster {
         self.perf_add_event(perf_entry, "Forward block/tipcut to logserver");
 
         // info!("Sending {}", block.block.n);
+        debug!("BlockBroadcaster forwarding entry n={} to Staging, this_is_final={}", entry.n(), this_is_final_block);
         self.staging_tx
             .send(Proposal {
                 entry: entry.clone(),
@@ -287,6 +294,7 @@ impl BlockBroadcaster {
             })
             .await
             .unwrap();
+        debug!("BlockBroadcaster successfully sent entry n={} to Staging", entry.n());
         #[cfg(not(feature = "dag"))]
         // info!("Sent {}", block.block.n);
         self.perf_add_event(perf_entry, "Forward block/tipcut to staging");

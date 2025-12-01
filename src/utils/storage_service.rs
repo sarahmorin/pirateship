@@ -1,6 +1,7 @@
 use std::io::Error;
 
 use tokio::sync::oneshot;
+use log::{debug, error};
 
 use crate::crypto::{CachedBlock, CryptoServiceConnector, HashType};
 #[cfg(feature = "dag")]
@@ -55,8 +56,15 @@ impl<S: StorageEngine> StorageService<S> {
                 StorageServiceCommand::Put(key, val, ok_chan) => {
                     #[cfg(feature = "storage")]
                     {
+                        debug!("[STORAGE] Processing Put command, key len={}, val len={}", key.len(), val.len());
                         let res = self.db.put_block(&val, &key);
-                        let _ = ok_chan.send(res);
+                        debug!("[STORAGE] Put completed: {:?}", res.is_ok());
+                        let send_result = ok_chan.send(res);
+                        if send_result.is_err() {
+                            error!("[STORAGE] Failed to send ack - receiver dropped!");
+                        } else {
+                            debug!("[STORAGE] Successfully sent ack");
+                        }
                     }
 
                     #[cfg(not(feature = "storage"))]

@@ -762,8 +762,11 @@ impl LogServer {
     #[cfg(feature = "dag")]
     async fn handle_new_tipcut(&mut self, tipcut: CachedTipCut) {
         // In DAG mode, store tip cuts instead of blocks
+        // NOTE: Tip cuts are already stored by BlockBroadcaster before forwarding to Staging
+        // LogServer only needs to maintain the in-memory log for queries and backfill
         info!(
-            "Storing tip cut with {} CARs (digest: {:?})",
+            "LogServer received tip cut n={} with {} CARs (digest: {:?})",
+            tipcut.tipcut.n,
             tipcut.tipcut.tips.len(),
             hex::encode(&tipcut.tipcut_hash[..8])
         );
@@ -787,8 +790,8 @@ impl LogServer {
             }
         }
 
-        // Persist before pushing to in-memory log
-        let _ = self.storage.put_tipcut(&tipcut).await;
+        // No need to persist here - BlockBroadcaster already stored it
+        // Just push to in-memory log for serving queries and backfill requests
         self.log.push_back(tipcut);
     }
 

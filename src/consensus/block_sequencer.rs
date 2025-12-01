@@ -8,22 +8,23 @@ use crate::consensus::block_broadcaster;
 use crate::consensus::block_tipcut::BlockOrTipCut;
 use crate::crypto::{default_hash, FutureHash};
 use crate::utils::channel::{Receiver, Sender};
+use crate::utils::StorageServiceConnector;
 use log::{debug, error, info, trace, warn};
-#[cfg(feature = "dag")]
-use lz4_flex::block;
-use tokio::sync::mpsc::UnboundedReceiver;
-use tokio::sync::{oneshot, Mutex};
+    #[cfg(feature = "dag")]
+    use lz4_flex::block;
+    use tokio::sync::mpsc::UnboundedReceiver;
+    use tokio::sync::{oneshot, Mutex};
 
-use crate::utils::PerfCounter;
-use crate::{
-    config::AtomicConfig,
-    crypto::{CachedBlock, CryptoServiceConnector, HashType},
-    proto::consensus::{
-        DefferedSignature, ProtoBlock, ProtoForkValidation, ProtoQuorumCertificate,
-        ProtoTipCutValidation,
-    },
-    utils::timer::ResettableTimer,
-};
+    use crate::utils::PerfCounter;
+    use crate::{
+        config::AtomicConfig,
+        crypto::{CachedBlock, CryptoServiceConnector, HashType},
+        proto::consensus::{
+            DefferedSignature, ProtoBlock, ProtoForkValidation, ProtoQuorumCertificate,
+            ProtoTipCutValidation,
+        },
+        utils::timer::ResettableTimer,
+    };
 
 use super::batch_proposal::{MsgAckChanWithTag, RawBatch};
 
@@ -71,6 +72,8 @@ pub struct BlockSequencer {
     block_broadcaster_tx: Sender<(u64, oneshot::Receiver<BlockOrTipCut>)>, // Last-ditch effort to parallelize hashing and signing of blocks, shouldn't matter.
     client_reply_tx: Sender<(oneshot::Receiver<HashType>, Vec<MsgAckChanWithTag>)>,
 
+    storage: StorageServiceConnector,
+
     crypto: CryptoServiceConnector,
     parent_hash_rx: FutureHash,
     seq_num: u64,
@@ -98,6 +101,7 @@ impl BlockSequencer {
         qc_rx: UnboundedReceiver<ProtoQuorumCertificate>,
         block_broadcaster_tx: Sender<(u64, oneshot::Receiver<BlockOrTipCut>)>,
         client_reply_tx: Sender<(oneshot::Receiver<HashType>, Vec<MsgAckChanWithTag>)>,
+        storage: StorageServiceConnector,
         crypto: CryptoServiceConnector,
         block_broadcaster_command_tx: Sender<BlockBroadcasterCommand>,
     ) -> Self {
@@ -129,6 +133,7 @@ impl BlockSequencer {
             current_qc_list: Vec::new(),
             block_broadcaster_tx,
             client_reply_tx,
+            storage,
             crypto,
             parent_hash_rx: FutureHash::None,
             seq_num: 0,
@@ -155,22 +160,46 @@ impl BlockSequencer {
     }
 
     pub async fn run(block_maker: Arc<Mutex<Self>>) {
-        let mut block_maker = block_maker.lock().await;
-        let signature_timer_handle = block_maker.signature_timer.run().await;
-        let chan_depth = block_maker.config.get().rpc_config.channel_depth;
+        let mut block_maker_lock = block_maker.lock().await;
+        let signature_timer_handle = block_maker_lock.signature_timer.run().await;
+        let chan_depth = block_maker_lock.config.get().rpc_config.channel_depth;
+
+        // Recover sequence number from storage
+        block_maker_lock.recover_state().await;
+
+        // Drop lock before entering loop
+        drop(block_maker_lock);
 
         loop {
-            if let Err(_) = block_maker.worker(chan_depth as usize).await {
+            let mut block_maker_lock = block_maker.lock().await;
+            if let Err(_) = block_maker_lock.worker(chan_depth as usize).await {
                 break;
             }
 
-            if block_maker.seq_num % 1000 == 0 {
-                block_maker.perf_counter_signed.borrow().log_aggregate();
-                block_maker.perf_counter_unsigned.borrow().log_aggregate();
+            if block_maker_lock.seq_num % 1000 == 0 {
+                block_maker_lock.perf_counter_signed.borrow().log_aggregate();
+                block_maker_lock.perf_counter_unsigned.borrow().log_aggregate();
             }
         }
 
         signature_timer_handle.abort();
+    }
+
+    async fn recover_state(&mut self) {
+        let key = "consensus_block_sequencer_seq_num";
+        match self.storage.get_raw(key.to_string()).await {
+            Ok(bytes) => {
+                if !bytes.is_empty() {
+                    if let Ok(arr) = bytes.try_into() {
+                        self.seq_num = u64::from_be_bytes(arr);
+                        info!("Recovered Consensus sequence number: {}", self.seq_num);
+                    }
+                }
+            }
+            Err(e) => {
+                debug!("Could not read Consensus sequence number from storage (might be fresh start): {:?}", e);
+            }
+        }
     }
 
     fn i_am_leader(&self) -> bool {
@@ -306,6 +335,7 @@ impl BlockSequencer {
                     },
                     _tipcut = self.tipcut_rx.recv() => {
                         if let Some(tipcut) = _tipcut {
+                            info!("Consensus Sequencer received tipcut for view {} with {} cars", tipcut.view, tipcut.tips.len());
                             self.__blocks_proposed_in_this_view += 1;
                             // Projected seq num is used as entry id for perf (parity with blocks)
                             self.perf_register(self.seq_num + 1);
@@ -390,6 +420,7 @@ impl BlockSequencer {
         self.seq_num += 1;
         let n = self.seq_num;
 
+        
         let config = self.config.get();
 
         #[cfg(feature = "dynamic_sign")]
@@ -434,6 +465,15 @@ impl BlockSequencer {
             )),
         };
 
+        #[cfg(feature = "dag")]
+        let mut tipcut = tipcut;
+        #[cfg(feature = "dag")]
+        {
+            // Assign sequence number and QCs to tipcut (TipCutProposal sends these as 0/empty)
+            tipcut.n = n;
+            tipcut.qc = qc_list;
+        }
+
         let parent_hash_rx = self.parent_hash_rx.take();
         self.perf_add_event(perf_entry_id, "Create Block", must_sign);
 
@@ -471,7 +511,7 @@ impl BlockSequencer {
         self.perf_add_event(perf_entry_id, "Send to Block Broadcaster", must_sign);
 
         self.perf_deregister(perf_entry_id);
-        trace!("Sequenced: {}", n);
+        info!("Sequenced consensus block: {}", n);
     }
 
     async fn add_qcs(&mut self, mut qcs: Vec<ProtoQuorumCertificate>) {

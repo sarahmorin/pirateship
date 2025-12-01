@@ -33,7 +33,8 @@ use std::{pin::Pin, sync::Arc, time::Duration};
 use crate::consensus::block_tipcut::BlockOrTipCut;
 use crate::crypto::FutureHash;
 use crate::utils::channel::{Receiver, Sender};
-use log::{debug, info, trace};
+use crate::utils::StorageServiceConnector;
+use log::{debug, error, info, trace};
 use tokio::sync::{oneshot, Mutex};
 
 use crate::utils::PerfCounter;
@@ -66,6 +67,8 @@ pub struct DagBlockSequencer {
     dag_broadcaster_tx: Sender<(u64, oneshot::Receiver<BlockOrTipCut>)>,
     client_reply_tx: Sender<(oneshot::Receiver<HashType>, Vec<MsgAckChanWithTag>)>,
 
+    storage: StorageServiceConnector,
+
     crypto: CryptoServiceConnector,
     parent_hash_rx: FutureHash,
     seq_num: u64,
@@ -87,6 +90,7 @@ impl DagBlockSequencer {
         batch_rx: Receiver<(RawBatch, Vec<MsgAckChanWithTag>)>,
         dag_broadcaster_tx: Sender<(u64, oneshot::Receiver<BlockOrTipCut>)>,
         client_reply_tx: Sender<(oneshot::Receiver<HashType>, Vec<MsgAckChanWithTag>)>,
+        storage: StorageServiceConnector,
         crypto: CryptoServiceConnector,
     ) -> Self {
         let signature_timer = ResettableTimer::new(Duration::from_millis(
@@ -122,6 +126,7 @@ impl DagBlockSequencer {
             signature_timer,
             dag_broadcaster_tx,
             client_reply_tx,
+            storage,
             crypto,
             parent_hash_rx: FutureHash::None,
             seq_num: 0,
@@ -136,24 +141,48 @@ impl DagBlockSequencer {
     }
 
     pub async fn run(block_maker: Arc<Mutex<Self>>) {
-        let mut block_maker = block_maker.lock().await;
-        let signature_timer_handle = block_maker.signature_timer.run().await;
+        let mut block_maker_lock = block_maker.lock().await;
+        let signature_timer_handle = block_maker_lock.signature_timer.run().await;
 
-        info!("DAG Block Sequencer started");
+        // Recover sequence number from storage
+        block_maker_lock.recover_state().await;
+
+        info!("DAG Block Sequencer started at seq_num {}", block_maker_lock.seq_num);
+
+        // Drop lock before entering loop
+        drop(block_maker_lock);
 
         loop {
-            if let Err(_) = block_maker.worker().await {
+            let mut block_maker_lock = block_maker.lock().await;
+            if let Err(_) = block_maker_lock.worker().await {
                 break;
             }
 
-            if block_maker.seq_num % 1000 == 0 {
-                block_maker.perf_counter_signed.borrow().log_aggregate();
-                block_maker.perf_counter_unsigned.borrow().log_aggregate();
+            if block_maker_lock.seq_num % 1000 == 0 {
+                block_maker_lock.perf_counter_signed.borrow().log_aggregate();
+                block_maker_lock.perf_counter_unsigned.borrow().log_aggregate();
             }
         }
 
         signature_timer_handle.abort();
         info!("DAG Block Sequencer exited");
+    }
+
+    async fn recover_state(&mut self) {
+        let key = "dag_block_sequencer_seq_num";
+        match self.storage.get_raw(key.to_string()).await {
+            Ok(bytes) => {
+                if !bytes.is_empty() {
+                    if let Ok(arr) = bytes.try_into() {
+                        self.seq_num = u64::from_be_bytes(arr);
+                        info!("Recovered DAG sequence number: {}", self.seq_num);
+                    }
+                }
+            }
+            Err(e) => {
+                debug!("Could not read DAG sequence number from storage (might be fresh start): {:?}", e);
+            }
+        }
     }
 
     fn perf_register(&mut self, entry: u64) {
@@ -228,6 +257,7 @@ impl DagBlockSequencer {
                 if let Some((batch, client_reply)) = batch_and_client_reply {
                     let perf_entry = self.seq_num + 1; // Projected seq num for perf tracking
                     self.perf_register(perf_entry);
+                    debug!("[DAG-DISSEMINATION] BlockSequencer received batch with {} txs, will create block {}", batch.len(), perf_entry);
                     self.handle_new_batch(batch, client_reply, perf_entry).await;
                 }
             },
@@ -244,6 +274,11 @@ impl DagBlockSequencer {
     ) {
         self.seq_num += 1;
         let n = self.seq_num;
+
+        // REMOVED: Sequence number persistence was flooding storage queue with dropped receivers
+        // This caused tip cut storage to be blocked, preventing consensus from making progress.
+        // Sequence numbers are recovered from lane_logserver on restart, so this is safe.
+        // If we need persistence, should use separate dedicated channel to avoid blocking consensus.
 
         let config = self.config.get();
 
@@ -313,6 +348,7 @@ impl DagBlockSequencer {
         self.perf_add_event(perf_entry_id, "Send to Client Reply", must_sign);
 
         // Send block to broadcaster for dissemination
+        debug!("[DAG-DISSEMINATION] BlockSequencer sending block {} to Broadcaster (signed={})", n, must_sign);
         self.dag_broadcaster_tx
             .send((n, block_rx))
             .await
@@ -320,7 +356,7 @@ impl DagBlockSequencer {
         self.perf_add_event(perf_entry_id, "Send to DAG Broadcaster", must_sign);
 
         self.perf_deregister(perf_entry_id);
-        trace!("DAG Sequenced block {}", n);
+        debug!("[DAG-DISSEMINATION] BlockSequencer completed sequencing block {}", n);
     }
 
     async fn handle_control_command(&mut self, cmd: DagBlockSequencerCommand) {

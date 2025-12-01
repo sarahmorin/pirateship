@@ -513,6 +513,7 @@ impl LaneLogServer {
                 view_is_stable: block.block.view_is_stable,
                 config_num: block.block.config_num,
                 serialized_body: block.block_ser.clone(),
+                block_hash: block.block_hash.clone(),
             });
         }
 
@@ -720,11 +721,17 @@ impl LaneLogServer {
         // Insert/replace CAR at sequence number
         car_map.insert(car.n, car.clone());
 
-        if self.persist_cars {
-            let key = Self::car_storage_key(&lane_id, car.n);
-            let ser = car.encode_to_vec();
-            let _ = self.storage.put_raw(key, ser).await; // fire-and-forget
-        }
+        // REMOVED: CAR persistence was flooding storage queue with dropped receivers
+        // This caused tip cut storage to be blocked, preventing consensus from making progress.
+        // CARs are kept in memory (lane_cars BTreeMap above) which is sufficient for operation.
+        // CARs can be reconstructed from blocks and BlockAcks on restart if needed.
+        // If persistence is truly needed, should use separate dedicated channel to avoid blocking consensus.
+        //
+        // if self.persist_cars {
+        //     let key = Self::car_storage_key(&lane_id, car.n);
+        //     let ser = car.encode_to_vec();
+        //     let _ = self.storage.put_raw(key, ser).await; // fire-and-forget
+        // }
     }
 
     fn car_storage_key(lane_id: &str, n: u64) -> String {

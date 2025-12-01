@@ -82,6 +82,7 @@ message HalfSerializedBlock {
     bool view_is_stable = 3;
     uint64 config_num = 4;
     bytes serialized_body = 5;      // Format: signature || parent_hash || serialized body
+    bytes block_hash = 6;           // Pre-computed hash from sender (avoids non-deterministic re-serialization)
 }
 
 // This is different from the logical view of a fork with fields `last` and `last_qc`.

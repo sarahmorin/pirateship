@@ -170,6 +170,7 @@ impl TipCutProposal {
         if timer_tick {
             // If timer ticked, propose tip cut based on timer
             if self.i_am_leader() {
+                debug!("[DAG-CONSENSUS] TipCutProposal: Leader proposing tip cut (timer-based, view={})", self.view);
                 if let Err(_) = self.propose_tip_cut(false).await {
                     error!("Failed to propose tip cut");
                 }
@@ -183,6 +184,7 @@ impl TipCutProposal {
         } else if self.config.get().dag_config.tip_cut_max_cars > 0 {
             // Otherwise, check if enough CARs have been seen to propose tip cut
             if self.i_am_leader() {
+                debug!("[DAG-CONSENSUS] TipCutProposal: Leader proposing tip cut (CAR threshold, view={})", self.view);
                 if let Err(_) = self.propose_tip_cut(true).await {
                     error!("Failed to propose tip cut");
                 }
@@ -238,16 +240,13 @@ impl TipCutProposal {
         let tip_cut = match self.query_tip_cut().await? {
             Some(tc) => tc,
             None => {
-                debug!("No CARs available yet for tip cut proposal");
+                info!("No CARs available yet for tip cut proposal");
                 return Ok(());
             }
         };
 
-        // Check if tip cut is valid (has at least one CAR)
-        // if tip_cut.cars.is_empty() {
-        //     // debug!("Tip cut is empty, skipping proposal");
-        //     // return Ok(());
-        // }
+        // In DAG consensus, we propose tip cuts even if empty to maintain liveness
+        // Empty tip cuts allow the system to progress and commit existing blocks
 
         // If using threshold-based proposal, check if enough CARs are present
         if use_threshold && tip_cut.cars.len() < self.tip_cut_max_cars {
@@ -288,6 +287,7 @@ impl TipCutProposal {
         // 1. Compute digest and parent
         // 2. Send to BlockBroadcaster
         // 3. BlockBroadcaster wraps in AppendEntries and broadcasts to all nodes
+        debug!("[DAG-CONSENSUS] TipCutProposal sending TipCut with {} CARs to BlockSequencer", proto_tip_cut.tips.len());
         self.consensus_sequencer_tx
             .send(proto_tip_cut)
             .await
@@ -301,8 +301,10 @@ impl TipCutProposal {
 
     /// Query lane_staging for the current tip cut.
     async fn query_tip_cut(&mut self) -> Result<Option<TipCut>, ()> {
+        debug!("[DAG TIP CUT DEBUG] query_tip_cut: creating oneshot channel");
         let (reply_tx, reply_rx) = oneshot::channel();
 
+        debug!("[DAG TIP CUT DEBUG] query_tip_cut: sending query to LaneStaging");
         // Send query
         self.lane_staging_query_tx
             .send(LaneStagingQuery::GetCurrentTipCut(reply_tx))
@@ -311,9 +313,27 @@ impl TipCutProposal {
                 error!("Failed to send query to LaneStaging: {:?}", e);
             })?;
 
-        // Wait for response
-        reply_rx.await.map_err(|e| {
-            error!("Failed to receive tip cut from LaneStaging: {:?}", e);
-        })
+        debug!("[DAG TIP CUT DEBUG] query_tip_cut: query sent, waiting for reply with 2s timeout");
+        // Wait for response with timeout to prevent infinite hangs
+        let result = tokio::time::timeout(
+            std::time::Duration::from_secs(2),
+            reply_rx
+        ).await;
+
+        match result {
+            Ok(Ok(tip_cut)) => {
+                debug!("[DAG TIP CUT DEBUG] query_tip_cut: received result successfully");
+                Ok(tip_cut)
+            }
+            Ok(Err(e)) => {
+                error!("Failed to receive tip cut from LaneStaging (channel closed): {:?}", e);
+                Err(())
+            }
+            Err(_) => {
+                error!("TIMEOUT waiting for tip cut response from LaneStaging after 2s - LaneStaging may be deadlocked or channel starved!");
+                Err(())
+            }
+        }
     }
 }
+

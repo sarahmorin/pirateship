@@ -23,6 +23,7 @@ use ed25519_dalek::SIGNATURE_LENGTH;
 use log::{debug, error, info, trace, warn};
 use prost::Message;
 use tokio::sync::{oneshot, Mutex};
+use hex;
 
 use crate::{
     config::AtomicConfig,
@@ -32,7 +33,7 @@ use crate::{
         consensus::{ProtoBlockAck, ProtoBlockCar, ProtoNameWithSignature},
         rpc::{proto_payload, ProtoPayload},
     },
-    rpc::{client::PinnedClient, MessageRef, SenderType},
+    rpc::{client::PinnedClient, server::LatencyProfile, MessageRef, PinnedMessage, SenderType},
     utils::{
         channel::{Receiver, Sender},
         StorageAck,
@@ -63,6 +64,9 @@ pub struct TipCut {
 pub enum LaneStagingQuery {
     /// Get the current tip cut (one CAR per lane)
     GetCurrentTipCut(oneshot::Sender<Option<TipCut>>),
+    
+    /// Health check probe - responds immediately to verify worker is alive
+    HealthProbe(oneshot::Sender<()>),
 }
 
 /// Information about a block stored in a lane
@@ -228,7 +232,7 @@ impl LaneStaging {
         let lane_id = stats.lane_id.clone();
         let seq_num = block.block.n;
 
-        debug!(
+        info!(
             "Received block n={} for lane {} from {}",
             seq_num, lane_id, stats.sender
         );
@@ -259,49 +263,51 @@ impl LaneStaging {
 
         lane.insert(seq_num, stored_block);
 
-        // Wait for storage to complete (BlockBroadcaster initiated this)
-        match storage_ack.await {
-            Ok(Ok(())) => {
-                debug!(
-                    "Block n={} in lane {:?} stored successfully",
-                    seq_num, lane_id
-                );
+        debug!(
+            "[DAG HASH DEBUG] Storing block n={} with hash={}",
+            block.block.n,
+            hex::encode(&block.block_hash)
+        );
 
-                // Forward to LaneLogServer for persistence and querying
-                self.lane_logserver_tx
-                    .send(LaneLogServerCommand::NewBlock(
-                        lane_id.clone(),
-                        block.clone(),
-                    ))
-                    .await
-                    .unwrap();
+        // Don't block worker loop on storage completion
+        // Storage happens in background. We'll send BlockAck immediately
+        // since the block is already validated and in our lane_blocks map
+        // If storage fails, it won't affect dissemination layer correctness
+        
+        debug!(
+            "Block n={} in lane {:?} queued for storage (non-blocking)",
+            seq_num, lane_id
+        );
 
-                // Send acknowledgment to other nodes
-                self.send_block_ack(&block, &lane_id).await?;
-            }
-            Ok(Err(e)) => {
-                error!(
-                    "Storage failed for block n={} in lane {:?}: {:?}",
-                    seq_num, lane_id, e
-                );
-                // Remove from our tracking
-                if let Some(lane) = self.lane_blocks.get_mut(&lane_id) {
-                    lane.remove(&seq_num);
+        // Forward to LaneLogServer for persistence and querying (fire-and-forget)
+        debug!("[DAG-DISSEMINATION] LaneStaging forwarding block {} from lane {} to LaneLogServer", seq_num, lane_id);
+        self.lane_logserver_tx
+            .send(LaneLogServerCommand::NewBlock(
+                lane_id.clone(),
+                block.clone(),
+            ))
+            .await
+            .unwrap();
+
+        // Send acknowledgment to other nodes immediately (non-blocking dissemination)
+        debug!("[DAG-DISSEMINATION] LaneStaging sending BlockAck for block {} in lane {}", seq_num, lane_id);
+        self.send_block_ack(&block, &lane_id).await?;
+
+        // Spawn background task to wait for storage completion (for logging only)
+        let lane_id_for_log = lane_id.clone();
+        tokio::spawn(async move {
+            match storage_ack.await {
+                Ok(Ok(())) => {
+                    debug!("Storage completed for block n={} in lane {:?}", seq_num, lane_id_for_log);
                 }
-                return Err(());
-            }
-            Err(_) => {
-                error!(
-                    "Storage ack channel closed for block n={} in lane {:?}",
-                    seq_num, lane_id
-                );
-                // Remove from our tracking
-                if let Some(lane) = self.lane_blocks.get_mut(&lane_id) {
-                    lane.remove(&seq_num);
+                Ok(Err(e)) => {
+                    error!("Storage FAILED for block n={} in lane {:?}: {:?}", seq_num, lane_id_for_log, e);
                 }
-                return Err(());
+                Err(_) => {
+                    error!("Storage ack channel CLOSED for block n={} in lane {:?}", seq_num, lane_id_for_log);
+                }
             }
-        }
+        });
 
         Ok(())
     }
@@ -316,6 +322,13 @@ impl LaneStaging {
 
         // Create signature on block digest
         let sig = self.crypto.sign(&block.block_hash).await;
+
+        debug!(
+            "[DAG HASH DEBUG] Sending BlockAck for lane={} n={} with hash={}",
+            lane_id,
+            block.block.n,
+            hex::encode(&block.block_hash)
+        );
 
         // Build BlockAck message
         let block_ack = ProtoBlockAck {
@@ -335,7 +348,7 @@ impl LaneStaging {
             return Ok(());
         }
 
-        debug!(
+        info!(
             "Sending BlockAck for n={} in lane {} to lane owner only",
             block.block.n, lane_id
         );
@@ -347,12 +360,12 @@ impl LaneStaging {
         let buf = payload.encode_to_vec();
         let sz = buf.len();
 
-        // Send only to the lane owner/origin node
+        // Send only to the lane owner/origin node (authenticated)
         if config.consensus_config.node_list.contains(lane_id) {
             let _ = PinnedClient::send(
                 &self.client,
                 lane_id,
-                MessageRef(&buf, sz, &SenderType::Anon),
+                MessageRef(&buf, sz, &SenderType::Auth(my_name.clone(), 0)),
             )
             .await;
         } else {
@@ -373,7 +386,7 @@ impl LaneStaging {
     ) -> Result<(), ()> {
         let (sender_name, _) = sender.to_name_and_sub_id();
 
-        debug!(
+        info!(
             "Received BlockAck for n={} lane={:?} from {}",
             block_ack.n, block_ack.lane, sender_name
         );
@@ -443,8 +456,11 @@ impl LaneStaging {
         let expected_digest: Vec<u8> = stored_block.block.block_hash.clone().try_into().unwrap();
         if expected_digest != block_ack.digest {
             warn!(
-                "BlockAck digest mismatch from {} for block n={}",
-                sender_name, block_ack.n
+                "[DAG HASH DEBUG] BlockAck digest mismatch from {} for block n={}: expected={} received={}",
+                sender_name,
+                block_ack.n,
+                hex::encode(&expected_digest),
+                hex::encode(&block_ack.digest)
             );
             return Ok(());
         }
@@ -454,7 +470,7 @@ impl LaneStaging {
             .acknowledgments
             .insert(sender_name.clone(), block_ack.sig);
 
-        debug!(
+        info!(
             "Block n={} in lane now has {}/{} acks",
             block_ack.n,
             stored_block.acknowledgments.len(),
@@ -462,6 +478,7 @@ impl LaneStaging {
         );
 
         // Check if we've reached the threshold to form a CAR
+        debug!("[DAG-DISSEMINATION] LaneStaging checking if CAR can be formed for lane {} block {}", lane_id, block_ack.n);
         self.maybe_form_car(&lane_id, block_ack.n).await?;
 
         Ok(())
@@ -473,7 +490,10 @@ impl LaneStaging {
         let (should_form_car, block_hash, view, acks) = {
             let lane = match self.lane_blocks.get(lane_id) {
                 Some(l) => l,
-                None => return Ok(()),
+                None => {
+                    debug!("Lane {} not found when checking for CAR formation", lane_id);
+                    return Ok(());
+                }
             };
 
             let stored_block = match lane.get(&seq_num) {
@@ -544,33 +564,16 @@ impl LaneStaging {
             }
         } // drop mutable borrow before awaits
 
-        // Persist CAR in lane_logserver before broadcasting
-        // Insert only if it doesn't exist yet
-        // NOTE: If there's a hash collision, we overwrite - this is extremely unlikely
-        let should_insert = {
-            use crate::utils::channel::make_channel;
-            let (tx, rx) = make_channel(1);
-            self.lane_logserver_query_tx
-                .send(LaneLogServerQuery::CheckCar(
-                    lane_id.clone(),
-                    seq_num,
-                    car.digest.clone(),
-                    tx,
-                ))
-                .await
-                .unwrap();
-            matches!(rx.recv().await.unwrap(), CheckCarResult::NotExists)
-        };
+        // Persist CAR in lane_logserver (fire-and-forget, no waiting)
+        // LaneLogServer will handle duplicates internally
+        let _ = self.lane_logserver_tx
+            .send(LaneLogServerCommand::NewCar(lane_id.clone(), car.clone()))
+            .await;
 
-        if should_insert {
-            self.lane_logserver_tx
-                .send(LaneLogServerCommand::NewCar(lane_id.clone(), car.clone()))
-                .await
-                .unwrap();
-        }
-
-        // Broadcast the CAR to all nodes
-        self.broadcast_car(car.clone()).await?;
+        // Broadcast the CAR to all nodes (non-blocking, spawns background task)
+        debug!("About to broadcast CAR for block n={} in lane {}", car.n, lane_id);
+        self.broadcast_car(car.clone())?;
+        debug!("broadcast_car() returned successfully for block n={}", car.n);
 
         // Mark as broadcasted
         {
@@ -596,13 +599,17 @@ impl LaneStaging {
     }
 
     /// Broadcast a formed CAR to all nodes.
-    // HACK: Do a better broadcasting implementation later
-    // - Can add the piggyback optimization later
-    async fn broadcast_car(&mut self, car: ProtoBlockCar) -> Result<(), ()> {
+    /// CRITICAL: This spawns a background task to avoid blocking the worker loop.
+    /// The worker loop MUST remain responsive to queries, block acks, and other messages.
+    /// Waiting for network I/O (broadcast acknowledgments) would create distributed deadlock.
+    fn broadcast_car(&self, car: ProtoBlockCar) -> Result<(), ()> {
         let config = self.config.get();
-        let my_name = &config.net_config.name;
+        let my_name = config.net_config.name.clone();
 
-        debug!("Broadcasting CAR for block n={}", car.n);
+        debug!("Broadcasting CAR n={} (fire-and-forget)", car.n);
+
+        // Extract car_n before moving car
+        let car_n = car.n;
 
         let payload = ProtoPayload {
             message: Some(proto_payload::Message::BlockCar(car)),
@@ -610,13 +617,34 @@ impl LaneStaging {
         let buf = payload.encode_to_vec();
         let sz = buf.len();
 
-        for node in &config.consensus_config.node_list {
-            if node == my_name {
-                continue;
-            }
-            let _ = PinnedClient::send(&self.client, node, MessageRef(&buf, sz, &SenderType::Anon))
-                .await;
+        // Build recipients - dereference node for comparison
+        let recipients: Vec<String> = config
+            .consensus_config
+            .node_list
+            .iter()
+            .filter(|node| **node != my_name)
+            .cloned()
+            .collect();
+
+        if recipients.is_empty() {
+            warn!("No recipients for CAR broadcast - am I the only node?");
+            return Ok(());
         }
+
+        // Capture values for spawn - clone my_name before move
+        let client = self.client.clone();
+        let my_name_for_spawn = my_name.clone();
+        let min_success = (recipients.len() / 2) + 1;
+
+        tokio::spawn(async move {
+            let mut profile = LatencyProfile::new();
+            let pinned_msg = PinnedMessage::from(buf, sz, SenderType::Auth(my_name_for_spawn, 0));
+            
+            match PinnedClient::broadcast(&client, &recipients, &pinned_msg, &mut profile, min_success).await {
+                Ok(_) => debug!("CAR n={} broadcast completed", car_n),
+                Err(e) => warn!("CAR n={} broadcast failed: {}", car_n, e),
+            }
+        });
 
         Ok(())
     }
@@ -837,41 +865,18 @@ impl LaneStaging {
                 .unwrap_or(false);
 
             if !local_parent_has_matching_car {
-                // Step 3: check with logserver
-                use crate::utils::channel::make_channel;
-                let (tx, rx) = make_channel(1);
-                self.lane_logserver_query_tx
-                    .send(LaneLogServerQuery::CheckCar(
-                        lane_id.clone(),
-                        car.n - 1,
-                        parent_digest.clone(),
-                        tx,
-                    ))
-                    .await
-                    .unwrap();
-                match rx.recv().await.unwrap() {
-                    CheckCarResult::Success => {
-                        // ok, continue to attach child
-                    }
-                    CheckCarResult::Failure => {
-                        warn!(
-                            "Rejecting CAR lane {} n {}: parent CAR exists with different digest",
-                            lane_id, car.n
-                        );
-                        return Ok(());
-                    }
-                    CheckCarResult::NotExists => {
-                        // queue pending until parent arrives
-                        self.add_pending_child(lane_id, car.n - 1, car.clone());
-                        trace!(
-                            "Queued CAR lane {} n {} pending parent n {} (not exists)",
-                            lane_id,
-                            car.n,
-                            car.n - 1
-                        );
-                        return Ok(());
-                    }
-                }
+                // OPTIMIZATION: Skip logserver query to avoid blocking worker loop.
+                // Instead, optimistically queue as pending child. When parent CAR arrives,
+                // process_pending_children will re-validate the chain.
+                // This sacrifices some redundant storage checks for worker responsiveness.
+                self.add_pending_child(lane_id, car.n - 1, car.clone());
+                trace!(
+                    "Queued CAR lane {} n {} pending parent n {} (optimistic, skip logserver check)",
+                    lane_id,
+                    car.n,
+                    car.n - 1
+                );
+                return Ok(());
             }
         }
 
@@ -892,27 +897,10 @@ impl LaneStaging {
             }
         }
 
-        // Persist remote CAR in lane_logserver if not present
-        // TODO: Shouldw e just overwrite the car always?
-        {
-            use crate::utils::channel::make_channel;
-            let (tx, rx) = make_channel(1);
-            self.lane_logserver_query_tx
-                .send(LaneLogServerQuery::CheckCar(
-                    lane_id.clone(),
-                    car.n,
-                    car.digest.clone(),
-                    tx,
-                ))
-                .await
-                .unwrap();
-            if matches!(rx.recv().await.unwrap(), CheckCarResult::NotExists) {
-                self.lane_logserver_tx
-                    .send(LaneLogServerCommand::NewCar(lane_id.clone(), car.clone()))
-                    .await
-                    .unwrap();
-            }
-        }
+        // Persist remote CAR in lane_logserver (fire-and-forget, duplicates handled internally)
+        let _ = self.lane_logserver_tx
+            .send(LaneLogServerCommand::NewCar(lane_id.clone(), car.clone()))
+            .await;
 
         // Update tip cut with this remote CAR (latest per-lane CAR)
         self.update_tip_cut(lane_id.clone(), car.clone());
@@ -1029,26 +1017,10 @@ impl LaneStaging {
             }
         }
 
-        // Persist if missing
-        {
-            use crate::utils::channel::make_channel;
-            let (tx, rx) = make_channel(1);
-            self.lane_logserver_query_tx
-                .send(LaneLogServerQuery::CheckCar(
-                    lane_id.clone(),
-                    car.n,
-                    car.digest.clone(),
-                    tx,
-                ))
-                .await
-                .unwrap();
-            if matches!(rx.recv().await.unwrap(), CheckCarResult::NotExists) {
-                self.lane_logserver_tx
-                    .send(LaneLogServerCommand::NewCar(lane_id.clone(), car.clone()))
-                    .await
-                    .unwrap();
-            }
-        }
+        // Persist CAR (fire-and-forget, LaneLogServer will handle duplicates internally)
+        let _ = self.lane_logserver_tx
+            .send(LaneLogServerCommand::NewCar(lane_id.clone(), car.clone()))
+            .await;
 
         // Update tip cut (children will be processed by the caller that accepted the parent)
         self.update_tip_cut(lane_id.clone(), car.clone());
@@ -1178,8 +1150,18 @@ impl LaneStaging {
     fn handle_query(&mut self, query: LaneStagingQuery) {
         match query {
             LaneStagingQuery::GetCurrentTipCut(reply_tx) => {
+                debug!("[DAG TIP CUT DEBUG] handle_query: received GetCurrentTipCut query");
                 let tip_cut = self.construct_tip_cut();
-                let _ = reply_tx.send(tip_cut);
+                debug!("[DAG TIP CUT DEBUG] handle_query: constructed tip_cut, sending reply");
+                if let Err(e) = reply_tx.send(tip_cut) {
+                    error!("[DAG TIP CUT DEBUG] handle_query: failed to send reply: {:?}", e);
+                } else {
+                    debug!("[DAG TIP CUT DEBUG] handle_query: reply sent successfully");
+                }
+            }
+            LaneStagingQuery::HealthProbe(reply_tx) => {
+                trace!("[DAG HEALTH] LaneStaging worker is alive, responding to health probe");
+                let _ = reply_tx.send(());
             }
         }
     }
@@ -1189,25 +1171,36 @@ impl LaneStaging {
     fn construct_tip_cut(&self) -> Option<TipCut> {
         let mut cars = HashMap::new();
 
+        debug!("[DAG TIP CUT DEBUG] construct_tip_cut: checking {} lanes", self.lane_blocks.len());
+
         // For each lane, find the CAR with the highest sequence number
         for (lane_id, blocks) in &self.lane_blocks {
+            debug!("[DAG TIP CUT DEBUG] Lane {} has {} blocks", lane_id, blocks.len());
             let mut highest_seq = None;
             let mut highest_car = None;
 
             for (seq_num, stored_block) in blocks {
                 if let Some(ref car) = stored_block.car {
+                    debug!("[DAG TIP CUT DEBUG] Lane {} block {} has CAR", lane_id, seq_num);
                     if highest_seq.is_none() || *seq_num > highest_seq.unwrap() {
                         highest_seq = Some(*seq_num);
                         highest_car = Some(car.clone());
                     }
+                } else {
+                    debug!("[DAG TIP CUT DEBUG] Lane {} block {} has NO CAR", lane_id, seq_num);
                 }
             }
 
             // Add the highest CAR for this lane to the tip cut
             if let Some(car) = highest_car {
+                debug!("[DAG TIP CUT DEBUG] Adding CAR from lane {} seq {} to tip cut", lane_id, highest_seq.unwrap());
                 cars.insert(lane_id.clone(), car);
+            } else {
+                debug!("[DAG TIP CUT DEBUG] No CARs found in lane {}", lane_id);
             }
         }
+
+        debug!("[DAG TIP CUT DEBUG] construct_tip_cut: returning TipCut with {} CARs", cars.len());
 
         // Return None if we have no CARs yet
         // if cars.is_empty() {

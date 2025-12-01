@@ -256,15 +256,14 @@ impl Staging {
         #[cfg(feature = "extra_2pc")]
         let (_vote_n, _vote_view, _vote_digest) = (vote.n, vote.view, vote.digest.clone());
 
-        // If this block is signed, need a signature for the vote.
-        if let Some(_) = last_btc.block_or_tc.sig() {
-            let vote_sig = self.crypto.sign(&last_btc.block_or_tc.digest()).await;
+        // Create signature for the vote
+        // In DAG mode, even unsigned TipCuts need vote signatures for QC formation
+        let vote_sig = self.crypto.sign(&last_btc.block_or_tc.digest()).await;
 
-            vote.sig_array.push(ProtoSignatureArrayEntry {
-                n: last_btc.block_or_tc.n(),
-                sig: vote_sig.to_vec(),
-            });
-        }
+        vote.sig_array.push(ProtoSignatureArrayEntry {
+            n: last_btc.block_or_tc.n(),
+            sig: vote_sig.to_vec(),
+        });
 
         // FIXME: Handle tip cuts here.
         // self.perf_add_event(&last_block.block, "Vote to Self");
@@ -321,28 +320,40 @@ impl Staging {
         &mut self,
         storage_ack: oneshot::Receiver<StorageAck>,
     ) -> Result<(), ()> {
+        debug!("Send_vote_on_last_btc_to_leader ENTRY: pending_votes.len()={}", self.pending_votes.len());
         let last_btc = match self.pending_votes.back() {
-            Some(b) => b,
-            None => return Err(()),
+            Some(b) => {
+                debug!("last_btc found: n={}", b.block_or_tc.n());
+                b
+            },
+            None => {
+                error!("EARLY RETURN: pending_votes is EMPTY");
+                return Err(());
+            },
         };
 
         // Wait for it to be stored.
         // Invariant: I vote => I stored
+        debug!("[WAIT] Waiting for storage acks, buffer len={}", self.__storage_ack_buffer.len());
         for ack in self.__storage_ack_buffer.drain(..) {
-            let _ = ack.await.unwrap();
+            debug!("[WAIT] Awaiting buffered storage_ack...");
+            let result = ack.await;
+            debug!("[WAIT] Buffered storage_ack resolved: {:?}", result);
+            let _ = result.unwrap();
         }
-        let _ = storage_ack.await.unwrap();
+        debug!("[WAIT] Storage buffer drained, now waiting for final storage_ack");
+        debug!("[WAIT] About to await final storage_ack...");
+        let final_result = storage_ack.await;
+        debug!("[WAIT] Final storage_ack resolved: {:?}", final_result);
+        let _ = final_result.unwrap();
+        debug!("[DONE] All storage acks received, proceeding with vote creation");
 
-        // I will resend all the signatures in pending_blocks that I have not received a QC for.
-        // But only if the last block was signed.
-        let sig_array = if let Some(_) = last_btc.block_or_tc.sig() {
-            self.pending_signatures
-                .iter()
-                .map(|(_, sig)| sig.clone())
-                .collect()
-        } else {
-            Vec::new()
-        };
+        // Resend all pending signatures (for blocks that haven't received QCs yet)
+        // In DAG mode, we need to send signatures even for unsigned TipCuts
+        let sig_array = self.pending_signatures
+            .iter()
+            .map(|(_, sig)| sig.clone())
+            .collect();
 
         let mut vote = ProtoVote {
             sig_array,
@@ -355,18 +366,17 @@ impl Staging {
         #[cfg(feature = "extra_2pc")]
         let (_vote_n, _vote_view, _vote_digest) = (vote.n, vote.view, vote.digest.clone());
 
-        // If this block is signed, need a signature for the vote.
-        if let Some(_) = last_btc.block_or_tc.sig() {
-            let vote_sig = self.crypto.sign(&last_btc.block_or_tc.digest()).await;
-            let sig_entry = ProtoSignatureArrayEntry {
-                n: last_btc.block_or_tc.n(),
-                sig: vote_sig.to_vec(),
-            };
-            vote.sig_array.push(sig_entry.clone());
+        // Create signature for the vote
+        // In DAG mode, even unsigned TipCuts need vote signatures for QC formation
+        let vote_sig = self.crypto.sign(&last_btc.block_or_tc.digest()).await;
+        let sig_entry = ProtoSignatureArrayEntry {
+            n: last_btc.block_or_tc.n(),
+            sig: vote_sig.to_vec(),
+        };
+        vote.sig_array.push(sig_entry.clone());
 
-            self.pending_signatures
-                .push_back((last_btc.block_or_tc.n(), sig_entry));
-        }
+        self.pending_signatures
+            .push_back((last_btc.block_or_tc.n(), sig_entry));
 
         let leader = self
             .config
@@ -422,8 +432,11 @@ impl Staging {
 
         #[cfg(not(feature = "extra_2pc"))]
         {
+            debug!("SENDING VOTE to leader={} for n={} view={} digest={}", 
+                leader, last_btc.block_or_tc.n(), self.view, hex::encode(&last_btc.block_or_tc.digest()));
             let _ = PinnedClient::send(&self.client, &leader, data.as_ref()).await;
             // .unwrap();
+            debug!("Vote SENT to {} for n={}", leader, last_btc.block_or_tc.n());
 
             if last_btc.block_or_tc.view_is_stable() {
                 trace!("Sent vote to {} for {}", leader, last_btc.block_or_tc.n());
@@ -603,10 +616,19 @@ impl Staging {
         //     return Ok(());
         // }
 
-        if this_is_final {
+        // For DAG mode, leader should always vote on own proposals immediately
+        // to ensure the 2f+1 quorum threshold is reached
+        #[cfg(feature = "dag")]
+        {
             self.vote_on_last_btc_for_self(storage_ack).await?;
-        } else {
-            self.__storage_ack_buffer.push_back(storage_ack);
+        }
+        #[cfg(not(feature = "dag"))]
+        {
+            if this_is_final {
+                self.vote_on_last_btc_for_self(storage_ack).await?;
+            } else {
+                self.__storage_ack_buffer.push_back(storage_ack);
+            }
         }
 
         Ok(())
@@ -736,6 +758,7 @@ impl Staging {
         self.__ae_seen_in_this_view += if this_is_final { 1 } else { 0 };
 
         // Postcondition here: block.view == self.view && check_continuity() == true && !i_am_leader
+        let btc_n = btc.n();
         let btc_with_votes = CachedWithVotes {
             block_or_tc: btc,
             vote_sigs: HashMap::new(),
@@ -743,7 +766,9 @@ impl Staging {
             qc_is_proposed: false,
             fast_qc_is_proposed: false,
         };
+        debug!("BEFORE push_back: pending_votes.len()={}, about to add n={}", self.pending_votes.len(), btc_n);
         self.pending_votes.push_back(btc_with_votes);
+        debug!("AFTER push_back: pending_votes.len()={}", self.pending_votes.len());
 
         // Now crash commit blindly
         if this_is_final {
@@ -782,8 +807,10 @@ impl Staging {
 
         // Reply vote to the leader.
         if this_is_final {
+            debug!("this_is_final=true, calling send_vote_on_last_btc_to_leader for n={}", btc_n);
             self.send_vote_on_last_btc_to_leader(storage_ack).await?;
         } else {
+            debug!("this_is_final=false, buffering storage_ack for n={}", btc_n);
             self.__storage_ack_buffer.push_back(storage_ack);
         }
 
@@ -863,10 +890,12 @@ impl Staging {
 
     /// Precondition: The vote has been cryptographically verified to be from sender.
     async fn process_vote(&mut self, sender: String, mut vote: ProtoVote) -> Result<(), ()> {
+        debug!("LEADER PROCESSING VOTE from {} for n={} view={}", sender, vote.n, vote.view);
         if !self.view_is_stable {
             info!("Processing vote on {} from {}", vote.n, sender);
         }
         if self.view != vote.view {
+            debug!("Vote view mismatch: vote.view={} != self.view={}", vote.view, self.view);
             return Ok(());
         }
 
@@ -886,17 +915,16 @@ impl Staging {
                 block.replication_set.insert(sender.clone());
             }
 
-            if let Some(_) = block.block_or_tc.sig() {
-                // If this block is signed, the sig array may have a signature for it.
-                vote.sig_array.retain(|e| {
-                    if e.n != block.block_or_tc.n() {
-                        true
-                    } else {
-                        block.vote_sigs.insert(sender.clone(), e.clone());
-                        false
-                    }
-                });
-            }
+            // Extract vote signatures from the vote's sig_array for this block/tipcut
+            // In DAG mode, even unsigned TipCuts need vote collection for QC formation
+            vote.sig_array.retain(|e| {
+                if e.n != block.block_or_tc.n() {
+                    true
+                } else {
+                    block.vote_sigs.insert(sender.clone(), e.clone());
+                    false
+                }
+            });
         }
 
         self.maybe_crash_commit().await?;
@@ -967,8 +995,10 @@ impl Staging {
             let mut committed_blocks: Vec<CachedBlock> = Vec::new();
 
             for tipcut in tipcuts {
+                debug!("[DAG-CONSENSUS] Staging processing TipCut for crash-commit (view={}, {} CARs)", tipcut.view, tipcut.tips.len());
                 match self.dag_fetch_and_sort_tipcut(&tipcut).await {
                     Ok((mut sorted_blocks, origin_map)) => {
+                        debug!("[DAG-CONSENSUS] Staging sorted {} blocks from TipCut", sorted_blocks.len());
                         // Merge origin maps (do not override existing entries)
                         for (k, v) in origin_map.into_iter() {
                             origin_map_total.entry(k).or_insert(v);

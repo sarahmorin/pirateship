@@ -447,6 +447,7 @@ impl TipCutSort {
         dag: &(HashMap<String, Vec<String>>, HashMap<String, DagBlock>),
         blocks: &[DagBlock],
     ) -> Result<Vec<DagBlock>, String> {
+        debug!("[DAG-CONSENSUS] Staging performing topological sort on {} blocks", blocks.len());
         let (children, block_map) = dag;
 
         // Compute in-degree for each block

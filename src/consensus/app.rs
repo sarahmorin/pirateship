@@ -8,7 +8,7 @@ use std::{
 };
 
 use hex::ToHex;
-use log::{error, info, trace, warn};
+use log::{debug, error, info, trace, warn};
 use serde::{de::DeserializeOwned, Serialize};
 use tokio::sync::{oneshot, Mutex};
 
@@ -386,6 +386,7 @@ impl<'a, E: AppEngine + Send + Sync + 'a> Application<'a, E> {
             }
             #[cfg(feature = "dag")]
             AppCommand::CrashCommitWithOrigins(blocks, origin_map) => {
+                debug!("[DAG-CONSENSUS] Application executing CrashCommit with {} blocks from DAG lanes", blocks.len());
                 // DAG mode: Handle crash commit with origin node information for proxy pattern
                 let my_name = self.config.get().net_config.name.clone();
 

@@ -1,0 +1,143 @@
+[INFO][pft::client::logger][2025-12-01T12:58:19.838216770-08:00] Average Crash commit latency: 0 us, Average Byz commit latency: 0 us
+[INFO][pft::client::logger][2025-12-01T12:58:19.838644002-08:00] Total Byz commit pending: 0, Max pending: 0, Min pending: 0
+[INFO][pft::client::logger][2025-12-01T12:58:20.839247886-08:00] Average Crash commit latency: 0 us, Average Byz commit latency: 0 us
+[INFO][pft::client::logger][2025-12-01T12:58:20.839650069-08:00] Total Byz commit pending: 10, Max pending: 1, Min pending: 1
+[INFO][pft::client::logger][2025-12-01T12:58:21.841161456-08:00] Average Crash commit latency: 0 us, Average Byz commit latency: 0 us
+[INFO][pft::client::logger][2025-12-01T12:58:21.841475100-08:00] Total Byz commit pending: 10, Max pending: 1, Min pending: 1
+[INFO][pft::client::logger][2025-12-01T12:58:22.842764780-08:00] Average Crash commit latency: 0 us, Average Byz commit latency: 0 us
+[INFO][pft::client::logger][2025-12-01T12:58:22.843035187-08:00] Total Byz commit pending: 10, Max pending: 1, Min pending: 1
+[INFO][pft::client::logger][2025-12-01T12:58:23.843379054-08:00] Average Crash commit latency: 0 us, Average Byz commit latency: 0 us
+[INFO][pft::client::logger][2025-12-01T12:58:23.843658639-08:00] Total Byz commit pending: 10, Max pending: 1, Min pending: 1
+[INFO][pft::client::logger][2025-12-01T12:58:24.845185086-08:00] Average Crash commit latency: 0 us, Average Byz commit latency: 0 us
+[INFO][pft::client::logger][2025-12-01T12:58:24.845557817-08:00] Total Byz commit pending: 10, Max pending: 1, Min pending: 1
+[INFO][pft::client::logger][2025-12-01T12:58:25.846889414-08:00] Average Crash commit latency: 0 us, Average Byz commit latency: 0 us
+[INFO][pft::client::logger][2025-12-01T12:58:25.847148070-08:00] Total Byz commit pending: 10, Max pending: 1, Min pending: 1
+[INFO][pft::client::logger][2025-12-01T12:58:26.847563972-08:00] Average Crash commit latency: 0 us, Average Byz commit latency: 0 us
+[INFO][pft::client::logger][2025-12-01T12:58:26.848096152-08:00] Total Byz commit pending: 10, Max pending: 1, Min pending: 1
+[INFO][pft::client::logger][2025-12-01T12:58:27.848487785-08:00] Average Crash commit latency: 0 us, Average Byz commit latency: 0 us
+[INFO][pft::client::logger][2025-12-01T12:58:27.848899215-08:00] Total Byz commit pending: 10, Max pending: 1, Min pending: 1
+[INFO][pft::client::logger][2025-12-01T12:58:28.849217214-08:00] Average Crash commit latency: 0 us, Average Byz commit latency: 0 us
+[INFO][pft::client::logger][2025-12-01T12:58:28.849528391-08:00] Total Byz commit pending: 10, Max pending: 1, Min pending: 1
+[INFO][pft::client::logger][2025-12-01T12:58:29.850845982-08:00] Average Crash commit latency: 0 us, Average Byz commit latency: 0 us
+[INFO][pft::client::logger][2025-12-01T12:58:29.851115831-08:00] Total Byz commit pending: 10, Max pending: 1, Min pending: 1
+[INFO][pft::client::logger][2025-12-01T12:58:30.851440562-08:00] Average Crash commit latency: 0 us, Average Byz commit latency: 0 us
+[INFO][pft::client::logger][2025-12-01T12:58:30.851909697-08:00] Total Byz commit pending: 10, Max pending: 1, Min pending: 1
+[INFO][pft::client::logger][2025-12-01T12:58:31.852422640-08:00] Average Crash commit latency: 0 us, Average Byz commit latency: 0 us
+[INFO][pft::client::logger][2025-12-01T12:58:31.852705191-08:00] Total Byz commit pending: 10, Max pending: 1, Min pending: 1
+[INFO][pft::client::logger][2025-12-01T12:58:32.853474792-08:00] Average Crash commit latency: 0 us, Average Byz commit latency: 0 us
+[INFO][pft::client::logger][2025-12-01T12:58:32.853819915-08:00] Total Byz commit pending: 10, Max pending: 1, Min pending: 1
+[INFO][pft::client::logger][2025-12-01T12:58:33.854344794-08:00] Average Crash commit latency: 0 us, Average Byz commit latency: 0 us
+[INFO][pft::client::logger][2025-12-01T12:58:33.854699337-08:00] Total Byz commit pending: 10, Max pending: 1, Min pending: 1
+[INFO][pft::client::logger][2025-12-01T12:58:34.856097842-08:00] Average Crash commit latency: 0 us, Average Byz commit latency: 0 us
+[INFO][pft::client::logger][2025-12-01T12:58:34.856255957-08:00] Total Byz commit pending: 10, Max pending: 1, Min pending: 1
+[INFO][pft::client::logger][2025-12-01T12:58:35.857832795-08:00] Average Crash commit latency: 0 us, Average Byz commit latency: 0 us
+[INFO][pft::client::logger][2025-12-01T12:58:35.858149306-08:00] Total Byz commit pending: 10, Max pending: 1, Min pending: 1
+[INFO][pft::client::logger][2025-12-01T12:58:36.858653162-08:00] Average Crash commit latency: 0 us, Average Byz commit latency: 0 us
+[INFO][pft::client::logger][2025-12-01T12:58:36.858902785-08:00] Total Byz commit pending: 10, Max pending: 1, Min pending: 1
+[INFO][pft::client::logger][2025-12-01T12:58:37.859418234-08:00] Average Crash commit latency: 0 us, Average Byz commit latency: 0 us
+[INFO][pft::client::logger][2025-12-01T12:58:37.859858733-08:00] Total Byz commit pending: 10, Max pending: 1, Min pending: 1
+[INFO][pft::client::logger][2025-12-01T12:58:38.860405415-08:00] Average Crash commit latency: 0 us, Average Byz commit latency: 0 us
+[INFO][pft::client::logger][2025-12-01T12:58:38.860664774-08:00] Total Byz commit pending: 10, Max pending: 1, Min pending: 1
+[INFO][pft::client::logger][2025-12-01T12:58:39.862175784-08:00] Average Crash commit latency: 0 us, Average Byz commit latency: 0 us
+[INFO][pft::client::logger][2025-12-01T12:58:39.862503446-08:00] Total Byz commit pending: 10, Max pending: 1, Min pending: 1
+[INFO][pft::client::logger][2025-12-01T12:58:40.863857506-08:00] Average Crash commit latency: 0 us, Average Byz commit latency: 0 us
+[INFO][pft::client::logger][2025-12-01T12:58:40.864055257-08:00] Total Byz commit pending: 10, Max pending: 1, Min pending: 1
+[INFO][pft::client::logger][2025-12-01T12:58:41.864421623-08:00] Average Crash commit latency: 0 us, Average Byz commit latency: 0 us
+[INFO][pft::client::logger][2025-12-01T12:58:41.864842393-08:00] Total Byz commit pending: 10, Max pending: 1, Min pending: 1
+[INFO][pft::client::logger][2025-12-01T12:58:42.865354460-08:00] Average Crash commit latency: 0 us, Average Byz commit latency: 0 us
+[INFO][pft::client::logger][2025-12-01T12:58:42.865741583-08:00] Total Byz commit pending: 10, Max pending: 1, Min pending: 1
+[INFO][pft::client::logger][2025-12-01T12:58:43.866350008-08:00] Average Crash commit latency: 0 us, Average Byz commit latency: 0 us
+[INFO][pft::client::logger][2025-12-01T12:58:43.866728581-08:00] Total Byz commit pending: 10, Max pending: 1, Min pending: 1
+[INFO][pft::client::logger][2025-12-01T12:58:44.867335807-08:00] Average Crash commit latency: 0 us, Average Byz commit latency: 0 us
+[INFO][pft::client::logger][2025-12-01T12:58:44.867593209-08:00] Total Byz commit pending: 10, Max pending: 1, Min pending: 1
+[INFO][pft::client::logger][2025-12-01T12:58:45.869035228-08:00] Average Crash commit latency: 0 us, Average Byz commit latency: 0 us
+[INFO][pft::client::logger][2025-12-01T12:58:45.869501892-08:00] Total Byz commit pending: 10, Max pending: 1, Min pending: 1
+[INFO][pft::client::logger][2025-12-01T12:58:46.870175729-08:00] Average Crash commit latency: 0 us, Average Byz commit latency: 0 us
+[INFO][pft::client::logger][2025-12-01T12:58:46.870437738-08:00] Total Byz commit pending: 10, Max pending: 1, Min pending: 1
+[INFO][pft::client::logger][2025-12-01T12:58:47.872212562-08:00] Average Crash commit latency: 0 us, Average Byz commit latency: 0 us
+[INFO][pft::client::logger][2025-12-01T12:58:47.872538207-08:00] Total Byz commit pending: 10, Max pending: 1, Min pending: 1
+[INFO][pft::client::logger][2025-12-01T12:58:48.874139695-08:00] Average Crash commit latency: 0 us, Average Byz commit latency: 0 us
+[INFO][pft::client::logger][2025-12-01T12:58:48.874382050-08:00] Total Byz commit pending: 10, Max pending: 1, Min pending: 1
+[INFO][pft::client::logger][2025-12-01T12:58:49.875886627-08:00] Average Crash commit latency: 0 us, Average Byz commit latency: 0 us
+[INFO][pft::client::logger][2025-12-01T12:58:49.876267167-08:00] Total Byz commit pending: 10, Max pending: 1, Min pending: 1
+[INFO][pft::client::logger][2025-12-01T12:58:50.876676197-08:00] Average Crash commit latency: 0 us, Average Byz commit latency: 0 us
+[INFO][pft::client::logger][2025-12-01T12:58:50.878918357-08:00] Total Byz commit pending: 10, Max pending: 1, Min pending: 1
+[INFO][pft::client::logger][2025-12-01T12:58:51.877343309-08:00] Average Crash commit latency: 0 us, Average Byz commit latency: 0 us
+[INFO][pft::client::logger][2025-12-01T12:58:51.877841133-08:00] Total Byz commit pending: 10, Max pending: 1, Min pending: 1
+[INFO][pft::client::logger][2025-12-01T12:58:52.878565173-08:00] Average Crash commit latency: 0 us, Average Byz commit latency: 0 us
+[INFO][pft::client::logger][2025-12-01T12:58:52.878819684-08:00] Total Byz commit pending: 10, Max pending: 1, Min pending: 1
+[INFO][pft::client::logger][2025-12-01T12:58:53.879468243-08:00] Average Crash commit latency: 0 us, Average Byz commit latency: 0 us
+[INFO][pft::client::logger][2025-12-01T12:58:53.879935468-08:00] Total Byz commit pending: 10, Max pending: 1, Min pending: 1
+[INFO][pft::client::logger][2025-12-01T12:58:54.880422173-08:00] Average Crash commit latency: 0 us, Average Byz commit latency: 0 us
+[INFO][pft::client::logger][2025-12-01T12:58:54.880711310-08:00] Total Byz commit pending: 10, Max pending: 1, Min pending: 1
+[INFO][pft::client::logger][2025-12-01T12:58:55.881241626-08:00] Average Crash commit latency: 0 us, Average Byz commit latency: 0 us
+[INFO][pft::client::logger][2025-12-01T12:58:55.881588311-08:00] Total Byz commit pending: 10, Max pending: 1, Min pending: 1
+[INFO][pft::client::logger][2025-12-01T12:58:56.882995238-08:00] Average Crash commit latency: 0 us, Average Byz commit latency: 0 us
+[INFO][pft::client::logger][2025-12-01T12:58:56.883356025-08:00] Total Byz commit pending: 10, Max pending: 1, Min pending: 1
+[INFO][pft::client::logger][2025-12-01T12:58:57.883747438-08:00] Average Crash commit latency: 0 us, Average Byz commit latency: 0 us
+[INFO][pft::client::logger][2025-12-01T12:58:57.884574948-08:00] Total Byz commit pending: 10, Max pending: 1, Min pending: 1
+[INFO][pft::client::logger][2025-12-01T12:58:58.885156273-08:00] Average Crash commit latency: 0 us, Average Byz commit latency: 0 us
+[INFO][pft::client::logger][2025-12-01T12:58:58.885421489-08:00] Total Byz commit pending: 10, Max pending: 1, Min pending: 1
+[INFO][pft::client::logger][2025-12-01T12:58:59.886976997-08:00] Average Crash commit latency: 0 us, Average Byz commit latency: 0 us
+[INFO][pft::client::logger][2025-12-01T12:58:59.887347762-08:00] Total Byz commit pending: 10, Max pending: 1, Min pending: 1
+[INFO][pft::client::logger][2025-12-01T12:59:00.887799651-08:00] Average Crash commit latency: 0 us, Average Byz commit latency: 0 us
+[INFO][pft::client::logger][2025-12-01T12:59:00.888164099-08:00] Total Byz commit pending: 10, Max pending: 1, Min pending: 1
+[INFO][pft::client::logger][2025-12-01T12:59:01.888586996-08:00] Average Crash commit latency: 0 us, Average Byz commit latency: 0 us
+[INFO][pft::client::logger][2025-12-01T12:59:01.888966512-08:00] Total Byz commit pending: 10, Max pending: 1, Min pending: 1
+[INFO][pft::client::logger][2025-12-01T12:59:02.889235738-08:00] Average Crash commit latency: 0 us, Average Byz commit latency: 0 us
+[INFO][pft::client::logger][2025-12-01T12:59:02.889650526-08:00] Total Byz commit pending: 10, Max pending: 1, Min pending: 1
+[INFO][pft::client::logger][2025-12-01T12:59:03.890270646-08:00] Average Crash commit latency: 0 us, Average Byz commit latency: 0 us
+[INFO][pft::client::logger][2025-12-01T12:59:03.890712456-08:00] Total Byz commit pending: 10, Max pending: 1, Min pending: 1
+[INFO][pft::client::logger][2025-12-01T12:59:04.891316812-08:00] Average Crash commit latency: 0 us, Average Byz commit latency: 0 us
+[INFO][pft::client::logger][2025-12-01T12:59:04.891671634-08:00] Total Byz commit pending: 10, Max pending: 1, Min pending: 1
+[INFO][pft::client::logger][2025-12-01T12:59:05.893143326-08:00] Average Crash commit latency: 0 us, Average Byz commit latency: 0 us
+[INFO][pft::client::logger][2025-12-01T12:59:05.893572803-08:00] Total Byz commit pending: 10, Max pending: 1, Min pending: 1
+[INFO][pft::client::logger][2025-12-01T12:59:06.895102201-08:00] Average Crash commit latency: 0 us, Average Byz commit latency: 0 us
+[INFO][pft::client::logger][2025-12-01T12:59:06.895417840-08:00] Total Byz commit pending: 10, Max pending: 1, Min pending: 1
+[INFO][pft::client::logger][2025-12-01T12:59:07.897796978-08:00] Average Crash commit latency: 0 us, Average Byz commit latency: 0 us
+[INFO][pft::client::logger][2025-12-01T12:59:07.898141880-08:00] Total Byz commit pending: 10, Max pending: 1, Min pending: 1
+[INFO][pft::client::logger][2025-12-01T12:59:08.898568201-08:00] Average Crash commit latency: 0 us, Average Byz commit latency: 0 us
+[INFO][pft::client::logger][2025-12-01T12:59:08.898924731-08:00] Total Byz commit pending: 10, Max pending: 1, Min pending: 1
+[INFO][pft::client::logger][2025-12-01T12:59:09.899426317-08:00] Average Crash commit latency: 0 us, Average Byz commit latency: 0 us
+[INFO][pft::client::logger][2025-12-01T12:59:09.899772955-08:00] Total Byz commit pending: 10, Max pending: 1, Min pending: 1
+[INFO][pft::client::logger][2025-12-01T12:59:10.900281619-08:00] Average Crash commit latency: 0 us, Average Byz commit latency: 0 us
+[INFO][pft::client::logger][2025-12-01T12:59:10.900525330-08:00] Total Byz commit pending: 10, Max pending: 1, Min pending: 1
+[INFO][pft::client::logger][2025-12-01T12:59:11.901897039-08:00] Average Crash commit latency: 0 us, Average Byz commit latency: 0 us
+[INFO][pft::client::logger][2025-12-01T12:59:11.902237227-08:00] Total Byz commit pending: 10, Max pending: 1, Min pending: 1
+[INFO][pft::client::logger][2025-12-01T12:59:12.902637497-08:00] Average Crash commit latency: 0 us, Average Byz commit latency: 0 us
+[INFO][pft::client::logger][2025-12-01T12:59:12.902870661-08:00] Total Byz commit pending: 10, Max pending: 1, Min pending: 1
+[INFO][pft::client::logger][2025-12-01T12:59:13.903203439-08:00] Average Crash commit latency: 0 us, Average Byz commit latency: 0 us
+[INFO][pft::client::logger][2025-12-01T12:59:13.903572389-08:00] Total Byz commit pending: 10, Max pending: 1, Min pending: 1
+[INFO][pft::client::logger][2025-12-01T12:59:14.904907100-08:00] Average Crash commit latency: 0 us, Average Byz commit latency: 0 us
+[INFO][pft::client::logger][2025-12-01T12:59:14.905315539-08:00] Total Byz commit pending: 10, Max pending: 1, Min pending: 1
+[INFO][pft::client::logger][2025-12-01T12:59:15.905860223-08:00] Average Crash commit latency: 0 us, Average Byz commit latency: 0 us
+[INFO][pft::client::logger][2025-12-01T12:59:15.906325438-08:00] Total Byz commit pending: 10, Max pending: 1, Min pending: 1
+[INFO][pft::client::logger][2025-12-01T12:59:16.907009015-08:00] Average Crash commit latency: 0 us, Average Byz commit latency: 0 us
+[INFO][pft::client::logger][2025-12-01T12:59:16.907262100-08:00] Total Byz commit pending: 10, Max pending: 1, Min pending: 1
+[INFO][pft::client::logger][2025-12-01T12:59:17.907589192-08:00] Average Crash commit latency: 0 us, Average Byz commit latency: 0 us
+[INFO][pft::client::logger][2025-12-01T12:59:17.907865467-08:00] Total Byz commit pending: 10, Max pending: 1, Min pending: 1
+[INFO][pft::client::logger][2025-12-01T12:59:18.908283035-08:00] Average Crash commit latency: 0 us, Average Byz commit latency: 0 us
+[INFO][pft::client::logger][2025-12-01T12:59:18.908592938-08:00] Total Byz commit pending: 10, Max pending: 1, Min pending: 1
+[INFO][pft::client::logger][2025-12-01T12:59:18.908754462-08:00] Logging over after 60 s
+[INFO][pft::client::logger][2025-12-01T12:59:18.908908821-08:00] Average Crash commit latency: 0 us, Average Byz commit latency: 0 us
+[INFO][pft::client::logger][2025-12-01T12:59:18.909061342-08:00] Total Byz commit pending: 10, Max pending: 1, Min pending: 1
+[INFO][pft::client::worker][2025-12-01T12:59:47.721847107-08:00] Backing off for 1000 ms
+[INFO][pft::client::worker][2025-12-01T12:59:47.723325251-08:00] Backing off for 1000 ms
+[INFO][pft::client::worker][2025-12-01T12:59:47.725618605-08:00] Backing off for 1000 ms
+[INFO][pft::client::worker][2025-12-01T12:59:47.726061280-08:00] Backing off for 1000 ms
+[INFO][pft::client::worker][2025-12-01T12:59:47.726300448-08:00] Backing off for 1000 ms
+[INFO][pft::client::worker][2025-12-01T12:59:47.726595908-08:00] Backing off for 1000 ms
+[INFO][pft::client::worker][2025-12-01T12:59:47.726823663-08:00] Backing off for 1000 ms
+[INFO][pft::client::worker][2025-12-01T12:59:47.727053787-08:00] Backing off for 1000 ms
+[INFO][pft::client::worker][2025-12-01T12:59:47.727445866-08:00] Backing off for 1000 ms
+[INFO][pft::client::worker][2025-12-01T12:59:47.727669381-08:00] Backing off for 1000 ms
+[INFO][pft::client::worker][2025-12-01T12:59:48.723484941-08:00] Experiment completed. Total requests: 16 Total runtime: 88 s
+[INFO][pft::client::worker][2025-12-01T12:59:48.726312197-08:00] Experiment completed. Total requests: 16 Total runtime: 88 s
+[INFO][pft::client::worker][2025-12-01T12:59:48.726519908-08:00] Experiment completed. Total requests: 16 Total runtime: 88 s
+[INFO][pft::client::worker][2025-12-01T12:59:48.727857263-08:00] Experiment completed. Total requests: 16 Total runtime: 88 s
+[INFO][pft::client::worker][2025-12-01T12:59:48.728102266-08:00] Experiment completed. Total requests: 16 Total runtime: 88 s
+[INFO][pft::client::worker][2025-12-01T12:59:48.728350590-08:00] Experiment completed. Total requests: 16 Total runtime: 88 s
+[INFO][pft::client::worker][2025-12-01T12:59:48.728589967-08:00] Experiment completed. Total requests: 16 Total runtime: 88 s
+[INFO][pft::client::worker][2025-12-01T12:59:48.728865729-08:00] Experiment completed. Total requests: 16 Total runtime: 88 s
+[INFO][pft::client::worker][2025-12-01T12:59:48.729107987-08:00] Experiment completed. Total requests: 16 Total runtime: 88 s
+[INFO][pft::client::worker][2025-12-01T12:59:48.729353449-08:00] Experiment completed. Total requests: 16 Total runtime: 88 s

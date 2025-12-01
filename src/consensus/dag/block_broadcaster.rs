@@ -191,6 +191,7 @@ impl DagBlockBroadcaster {
                 let block = block.unwrap();
                 let __n = block.0;
 
+                debug!("[DAG-DISSEMINATION] BlockBroadcaster received block {} from sequencer", __n);
                 let perf_entry = block.0;
                 self.perf_register(perf_entry);
                 let block = block.1.await;
@@ -200,13 +201,14 @@ impl DagBlockBroadcaster {
                     return Ok(());
                 }
                 if let BlockOrTipCut::Block(b) = block.unwrap() {
+                    debug!("[DAG-DISSEMINATION] BlockBroadcaster processing my block {}", __n);
                     self.process_my_block(b).await?;
                 } else {
                     error!("Expected block but got tipcut for block {}", __n);
                     return Ok(());
                 }
 
-                trace!("Processed block {}", __n);
+                debug!("[DAG-DISSEMINATION] BlockBroadcaster completed processing block {}", __n);
             },
 
             block_vec = self.other_block_rx.recv() => {
@@ -425,6 +427,7 @@ impl DagBlockBroadcaster {
                 view_is_stable: b.block.view_is_stable,
                 config_num: b.block.config_num,
                 serialized_body: b.block_ser.clone(),
+                block_hash: b.block_hash.clone(),
             })
             .collect();
 
@@ -449,13 +452,14 @@ impl DagBlockBroadcaster {
         }
 
         let sz = data.len();
-        if !view_is_stable {
+        // if !view_is_stable {
             info!(
                 "AppendBlocks batch size: {} Broadcasting to {:?}",
                 sz, names
             );
-        }
-        let data = PinnedMessage::from(data, sz, SenderType::Anon);
+        // }
+        let my_name = self.config.get().net_config.name.clone();
+        let data = PinnedMessage::from(data, sz, SenderType::Auth(my_name, 0));
         let mut profile = LatencyProfile::new();
         let _res = PinnedClient::broadcast(
             &self.client,
@@ -465,6 +469,7 @@ impl DagBlockBroadcaster {
             self.get_car_broadcast_threshold(),
         )
         .await;
+        info!("Broadcast finished to {:?}", names);
 
         if should_perf {
             self.perf_add_event(perf_entry, "Forward block to other nodes");

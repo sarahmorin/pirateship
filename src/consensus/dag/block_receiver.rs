@@ -174,7 +174,7 @@ impl BlockReceiver {
             tokio::select! {
                 block_sender = self.block_rx.recv() => {
                     if let Some((blocks, SenderType::Auth(sender, _))) = block_sender {
-                        debug!("Received AppendBlocks(n={}) from {}",
+                        info!("Received AppendBlocks(n={}) from {}",
                             blocks.serialized_blocks.last().unwrap().n, sender);
                         self.process_blocks(blocks, sender).await;
                     }
@@ -230,25 +230,28 @@ impl BlockReceiver {
                 stats.waiting_on_nack_reply = false;
             }
 
-            // Verify the block cryptographically
-            // The crypto service returns:
-            // - block_rx: oneshot::Receiver<CachedBlock> (the verified block)
-            // - hash_rx: oneshot::Receiver<Vec<u8>> (the block hash)
-            // - hash_rx2: oneshot::Receiver<Vec<u8>> (duplicate hash for convenience)
-            let (block_rx, hash_rx, _hash_rx2) = self
-                .crypto
-                .prepare_block(
-                    match deserialize_proto_block(&half_serialized.serialized_body) {
-                        Ok(b) => b,
-                        Err(_) => {
-                            warn!("Failed to deserialize block body");
-                            return;
-                        }
-                    },
-                    true,             // Always sign in DAG mode
-                    FutureHash::None, // Parent hash is in the block already
-                )
-                .await;
+            // Deserialize block for validation and parent extraction
+            // DO NOT re-serialize - use sender's bytes and hash directly to avoid non-deterministic protobuf serialization
+            let proto_block = match deserialize_proto_block(&half_serialized.serialized_body) {
+                Ok(b) => b,
+                Err(_) => {
+                    warn!("Failed to deserialize block body");
+                    return;
+                }
+            };
+            
+            // Use sender's pre-computed hash and serialization (avoids non-deterministic re-serialization)
+            let cached_block = CachedBlock::new(
+                proto_block.clone(),
+                half_serialized.serialized_body.clone(),
+                half_serialized.block_hash.clone(),
+            );
+
+            debug!(
+                "[DAG HASH DEBUG] BlockReceiver received block n={} with hash={}",
+                half_serialized.n,
+                hex::encode(&cached_block.block_hash)
+            );
 
             // Create stats for this block
             let stats = AppendBlockStats {
@@ -260,29 +263,9 @@ impl BlockReceiver {
                 lane_id: lane_id.clone(),
             };
 
-            // Wrap the block receiver to match the expected Result type
-            // The crypto service guarantees the block is valid at this point
+            // Create a resolved future (no async computation needed)
             let (result_tx, result_rx) = oneshot::channel();
-            tokio::spawn(async move {
-                match block_rx.await {
-                    Ok(btc) => {
-                        if let BlockOrTipCut::Block(block) = btc {
-                            let _ = result_tx.send(Ok(block));
-                        } else {
-                            let _ = result_tx.send(Err(Error::new(
-                                std::io::ErrorKind::Other,
-                                "Expected block but got tipcut",
-                            )));
-                        }
-                    }
-                    Err(_) => {
-                        let _ = result_tx.send(Err(Error::new(
-                            std::io::ErrorKind::Other,
-                            "Block verification cancelled",
-                        )));
-                    }
-                }
-            });
+            let _ = result_tx.send(Ok(cached_block.clone()));
 
             // Forward to broadcaster
             let single_block = SingleBlock {
@@ -290,31 +273,16 @@ impl BlockReceiver {
                 stats,
             };
 
+            debug!("[DAG-DISSEMINATION] BlockReceiver forwarding block from lane {} to Broadcaster", lane_id);
             self.dag_broadcaster_tx.send(single_block).await.unwrap();
 
             // Update lane continuity with the hash of this block
-            // Wrap hash receiver to match FutureResult type
-            let (hash_result_tx, hash_result_rx) = oneshot::channel();
-            tokio::spawn(async move {
-                match hash_rx.await {
-                    Ok(hash) => {
-                        let _ = hash_result_tx.send(Ok(hash));
-                    }
-                    Err(_) => {
-                        let _ = hash_result_tx.send(Err(Error::new(
-                            std::io::ErrorKind::Other,
-                            "Hash calculation cancelled",
-                        )));
-                    }
-                }
-            });
-
             let lane_stats = self
                 .lane_continuity
                 .entry(lane_id.clone())
                 .or_insert_with(LaneContinuityStats::new);
 
-            lane_stats.last_block_hash = FutureHash::FutureResult(hash_result_rx);
+            lane_stats.last_block_hash = FutureHash::Immediate(cached_block.block_hash.clone());
             lane_stats.last_block_n = half_serialized.n;
         }
     }
