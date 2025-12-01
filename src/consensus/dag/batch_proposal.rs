@@ -14,7 +14,7 @@ use crate::rpc::server::LatencyProfile;
 use crate::rpc::{PinnedMessage, SenderType};
 use crate::utils::channel::{Receiver, Sender};
 use crate::utils::PerfCounter;
-use log::{info, warn};
+use log::{debug, error, info, warn};
 use prost::Message as _;
 use std::io::ErrorKind;
 use tokio::sync::{oneshot, Mutex};
@@ -110,6 +110,7 @@ impl BatchProposer {
     }
 
     pub async fn run(batch_proposer: Arc<Mutex<Self>>) {
+        info!("BatchProposer worker starting");
         let mut batch_proposer = batch_proposer.lock().await;
         let batch_timer_handle = batch_proposer.batch_timer.run().await;
 
@@ -118,9 +119,15 @@ impl BatchProposer {
             .get()
             .consensus_config
             .max_backlog_batch_size;
+        // Avoid division by zero and ensure sane default
+        let batch_size = if batch_size == 0 { 1 } else { batch_size };
+
+        info!("BatchProposer started with max_batch_size={}", batch_size);
+
         let mut total_work = 0;
         loop {
-            if let Err(_) = batch_proposer.worker(total_work).await {
+            if let Err(e) = batch_proposer.worker(total_work).await {
+                error!("BatchProposer worker error: {:?}", e);
                 break;
             }
 
@@ -131,6 +138,7 @@ impl BatchProposer {
         }
 
         batch_timer_handle.abort();
+        info!("BatchProposer worker stopped");
     }
 
     fn perf_register_random(&mut self, entry: usize) {
@@ -182,10 +190,14 @@ impl BatchProposer {
                 new_tx = _new_tx;
             },
             _cmd = self.cmd_rx.recv() => {
-                let (make_new_batches, current_leader) = _cmd.unwrap();
-                self.make_new_batches = make_new_batches;
-                self.current_leader = current_leader;
-                return Ok(());
+                if let Some((make_new_batches, current_leader)) = _cmd {
+                    self.make_new_batches = make_new_batches;
+                    self.current_leader = current_leader;
+                    return Ok(());
+                } else {
+                    warn!("BatchProposer cmd channel closed");
+                    return Err(Error::new(ErrorKind::BrokenPipe, "Cmd channel closed"));
+                }
             },
             _tick = self.batch_timer.wait() => {
                 batch_timer_tick = _tick;
@@ -254,10 +266,15 @@ impl BatchProposer {
     async fn propose_new_batch(&mut self) {
         self.last_batch_proposed = Instant::now();
         let batch = self.current_raw_batch.take().unwrap();
+        debug!(
+            "[DAG-DISSEMINATION] BatchProposer proposing batch with {} txs",
+            batch.len()
+        );
         self.current_raw_batch = Some(RawBatch::with_capacity(
             self.config.get().consensus_config.max_backlog_batch_size,
         ));
         let reply_chans = self.current_reply_vec.drain(..).collect();
+        debug!("[DAG-DISSEMINATION] BatchProposer sending batch to BlockSequencer");
         let _ = self.dag_block_seq_tx.send((batch, reply_chans)).await;
         self.perf_event_and_deregister_all("Propose batch");
         self.batch_timer.reset();
