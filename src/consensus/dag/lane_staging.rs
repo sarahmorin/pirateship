@@ -20,6 +20,7 @@ use std::{
 };
 
 use ed25519_dalek::SIGNATURE_LENGTH;
+use hex; // for hex::encode in debug instrumentation
 use log::{debug, error, info, trace, warn};
 use prost::Message;
 use tokio::sync::{oneshot, Mutex};
@@ -178,10 +179,13 @@ impl LaneStaging {
                 break;
             }
         }
+
+        warn!("LaneStaging worker exiting");
     }
 
     async fn worker(&mut self) -> Result<(), ()> {
         tokio::select! {
+            biased;
             block = self.block_rx.recv() => {
                 if block.is_none() {
                     return Err(());
@@ -229,8 +233,12 @@ impl LaneStaging {
         let seq_num = block.block.n;
 
         debug!(
-            "Received block n={} for lane {} from {}",
-            seq_num, lane_id, stats.sender
+            "DAG-DBG block_rx: lane={} n={} view={} ci={} existing_blocks_in_lane={}",
+            lane_id,
+            seq_num,
+            stats.view,
+            stats.ci,
+            self.lane_blocks.get(&lane_id).map(|m| m.len()).unwrap_or(0)
         );
 
         // Get or create lane entry
@@ -263,8 +271,12 @@ impl LaneStaging {
         match storage_ack.await {
             Ok(Ok(())) => {
                 debug!(
-                    "Block n={} in lane {:?} stored successfully",
-                    seq_num, lane_id
+                    "DAG-DBG storage_ok: lane={} n={} hash={} txs={} parent_digest_len={}",
+                    lane_id,
+                    seq_num,
+                    hex::encode(&block.block_hash),
+                    block.block.tx_list.len(),
+                    block.block.parent.len()
                 );
 
                 // Forward to LaneLogServer for persistence and querying
@@ -284,6 +296,10 @@ impl LaneStaging {
                     "Storage failed for block n={} in lane {:?}: {:?}",
                     seq_num, lane_id, e
                 );
+                warn!(
+                    "DAG-DBG storage_fail: lane={} n={} err={:?}",
+                    lane_id, seq_num, e
+                );
                 // Remove from our tracking
                 if let Some(lane) = self.lane_blocks.get_mut(&lane_id) {
                     lane.remove(&seq_num);
@@ -295,6 +311,7 @@ impl LaneStaging {
                     "Storage ack channel closed for block n={} in lane {:?}",
                     seq_num, lane_id
                 );
+                warn!("DAG-DBG storage_closed: lane={} n={}", lane_id, seq_num);
                 // Remove from our tracking
                 if let Some(lane) = self.lane_blocks.get_mut(&lane_id) {
                     lane.remove(&seq_num);
@@ -324,20 +341,28 @@ impl LaneStaging {
             lane: lane_id.as_bytes().to_vec(),
             sig: sig.to_vec(),
         };
+        let threshold = self.car_threshold();
+        debug!("DAG-DBG ack_prepare: lane={} n={} owner={} threshold={} cluster_nodes={} txs={} hash={}",
+            lane_id, block.block.n, my_name, threshold, config.consensus_config.node_list.len(), block.block.tx_list.len(), hex::encode(&block.block_hash));
 
         // If we're the lane owner, no need to send an ack to ourselves.
         if lane_id == my_name {
-            trace!(
+            debug!(
                 "Lane owner {} stored its own block n={} — not sending BlockAck to self",
-                my_name,
-                block.block.n
+                my_name, block.block.n
             );
-            return Ok(());
+            warn!("not actually skipping");
+            // return Ok(());
         }
 
         debug!(
-            "Sending BlockAck for n={} in lane {} to lane owner only",
-            block.block.n, lane_id
+            "DAG-DBG ack_send: lane={} n={} to_owner={} sig_len={} digest_len={} hash={}",
+            lane_id,
+            block.block.n,
+            lane_id,
+            block_ack.sig.len(),
+            block_ack.digest.len(),
+            hex::encode(&block.block_hash)
         );
 
         // Encode payload
@@ -404,6 +429,14 @@ impl LaneStaging {
 
         if !verified {
             warn!("Failed to verify BlockAck from {}", sender_name);
+            warn!(
+                "DAG-DBG ack_verify_fail: from={} lane_bytes_len={} n={} digest_len={} sig_len={}",
+                sender_name,
+                block_ack.lane.len(),
+                block_ack.n,
+                block_ack.digest.len(),
+                block_ack.sig.len()
+            );
             return Ok(());
         }
 
@@ -417,51 +450,68 @@ impl LaneStaging {
         };
 
         // Find the block in our lane storage
-        let lane = match self.lane_blocks.get_mut(&lane_id) {
-            Some(l) => l,
-            None => {
-                debug!(
-                    "Received ack for unknown lane {} from {}",
-                    lane_id, sender_name
-                );
-                return Ok(());
+        // First perform lookup without holding mutable borrow across later self accesses
+        let (lane_has_block, expected_digest_opt) = {
+            if let Some(lane_map) = self.lane_blocks.get(&lane_id) {
+                if let Some(stored) = lane_map.get(&block_ack.n) {
+                    (true, Some(stored.block.block_hash.clone()))
+                } else {
+                    (false, None)
+                }
+            } else {
+                (false, None)
             }
         };
-
-        let stored_block = match lane.get_mut(&block_ack.n) {
-            Some(b) => b,
-            None => {
-                debug!(
-                    "Received ack for unknown block n={} in lane from {}",
-                    block_ack.n, sender_name
-                );
-                return Ok(());
-            }
-        };
-
-        // Verify digest matches our stored block
-        let expected_digest: Vec<u8> = stored_block.block.block_hash.clone().try_into().unwrap();
+        if !lane_has_block {
+            debug!(
+                "Received ack for unknown lane/block: lane={} n={} from={}",
+                lane_id, block_ack.n, sender_name
+            );
+            debug!(
+                "DAG-DBG ack_unknown: lane={} n={} from={}",
+                lane_id, block_ack.n, sender_name
+            );
+            return Ok(());
+        }
+        let expected_digest: Vec<u8> = expected_digest_opt.unwrap().try_into().unwrap_or_default();
         if expected_digest != block_ack.digest {
             warn!(
                 "BlockAck digest mismatch from {} for block n={}",
                 sender_name, block_ack.n
             );
+            warn!(
+                "DAG-DBG ack_digest_mismatch: lane={} n={} from={} expected={} got={}",
+                lane_id,
+                block_ack.n,
+                sender_name,
+                hex::encode(&expected_digest),
+                hex::encode(&block_ack.digest)
+            );
             return Ok(());
         }
-
-        // Store the acknowledgment
-        stored_block
-            .acknowledgments
-            .insert(sender_name.clone(), block_ack.sig);
-
-        debug!(
-            "Block n={} in lane now has {}/{} acks",
-            block_ack.n,
-            stored_block.acknowledgments.len(),
-            self.car_threshold()
-        );
-
-        // Check if we've reached the threshold to form a CAR
+        // Now safe to take mutable borrow to insert acknowledgment
+        let threshold = self.car_threshold();
+        if let Some(lane_map) = self.lane_blocks.get_mut(&lane_id) {
+            if let Some(stored_block) = lane_map.get_mut(&block_ack.n) {
+                stored_block
+                    .acknowledgments
+                    .insert(sender_name.clone(), block_ack.sig.clone());
+                let ack_count = stored_block.acknowledgments.len();
+                debug!(
+                    "Block n={} in lane now has {}/{} acks",
+                    block_ack.n, ack_count, threshold
+                );
+                debug!(
+                    "DAG-DBG ack_count: lane={} n={} acks={} threshold={} remaining={}",
+                    lane_id,
+                    block_ack.n,
+                    ack_count,
+                    threshold,
+                    threshold.saturating_sub(ack_count)
+                );
+            }
+        }
+        // Check if we've reached the threshold to form a CAR (after insertion)
         self.maybe_form_car(&lane_id, block_ack.n).await?;
 
         Ok(())
@@ -483,6 +533,10 @@ impl LaneStaging {
 
             // Check if CAR already formed
             if stored_block.car.is_some() {
+                debug!(
+                    "DAG-DBG car_skip_already_formed: lane={} n={}",
+                    lane_id, seq_num
+                );
                 return Ok(());
             }
 
@@ -497,12 +551,24 @@ impl LaneStaging {
                     ack_count,
                     threshold
                 );
+                debug!(
+                    "DAG-DBG car_wait: lane={} n={} acks={} threshold={} remaining={}",
+                    lane_id,
+                    seq_num,
+                    ack_count,
+                    threshold,
+                    threshold.saturating_sub(ack_count)
+                );
                 return Ok(());
             }
 
             info!(
                 "Forming CAR for block n={} in lane {:?} (acks: {}/{})",
                 seq_num, lane_id, ack_count, threshold
+            );
+            debug!(
+                "DAG-DBG car_form_start: lane={} n={} acks={} threshold={}",
+                lane_id, seq_num, ack_count, threshold
             );
 
             // Collect the data we need
@@ -534,6 +600,14 @@ impl LaneStaging {
             view,
             origin_node: my_name, // Track which node accepted the client requests
         };
+        debug!(
+            "DAG-DBG car_built: lane={} n={} view={} sig_count={} digest_len={}",
+            lane_id,
+            seq_num,
+            view,
+            car.sig.len(),
+            car.digest.len()
+        );
 
         // Store the CAR
         {
@@ -567,10 +641,15 @@ impl LaneStaging {
                 .send(LaneLogServerCommand::NewCar(lane_id.clone(), car.clone()))
                 .await
                 .unwrap();
+            debug!("DAG-DBG car_persist: lane={} n={}", lane_id, seq_num);
         }
 
         // Broadcast the CAR to all nodes
         self.broadcast_car(car.clone()).await?;
+        debug!(
+            "DAG-DBG car_broadcast_initiated: lane={} n={}",
+            lane_id, seq_num
+        );
 
         // Mark as broadcasted
         {
@@ -583,6 +662,10 @@ impl LaneStaging {
 
         // Update the current tip cut with this new CAR
         self.update_tip_cut(lane_id.clone(), car.clone());
+        debug!(
+            "DAG-DBG tipcut_update_after_car: lane={} n={}",
+            lane_id, seq_num
+        );
 
         // Process any children that were waiting on this parent
         self.process_pending_children(lane_id, seq_num).await?;
@@ -603,6 +686,14 @@ impl LaneStaging {
         let my_name = &config.net_config.name;
 
         debug!("Broadcasting CAR for block n={}", car.n);
+        debug!(
+            "DAG-DBG car_broadcast: origin={} n={} sig_count={} recipients={} digest_len={}",
+            car.origin_node,
+            car.n,
+            car.sig.len(),
+            config.consensus_config.node_list.len().saturating_sub(1),
+            car.digest.len()
+        );
 
         let payload = ProtoPayload {
             message: Some(proto_payload::Message::BlockCar(car)),
@@ -650,6 +741,14 @@ impl LaneStaging {
             "Processing remote CAR from {} for lane {} seq {}",
             sender_name, lane_id, car.n
         );
+        debug!(
+            "DAG-DBG remote_car_rx: from={} lane={} n={} sig_count={} digest_len={}",
+            sender_name,
+            lane_id,
+            car.n,
+            car.sig.len(),
+            car.digest.len()
+        );
 
         // Basic validation
         if lane_id.is_empty() {
@@ -670,6 +769,10 @@ impl LaneStaging {
             warn!(
                 "Received CAR for lane {} from different sender {} - rejecting",
                 lane_id, sender_name
+            );
+            warn!(
+                "DAG-DBG remote_car_reject_sender_mismatch: lane={} n={} from={}",
+                lane_id, car.n, sender_name
             );
             return Ok(());
         }
@@ -737,6 +840,13 @@ impl LaneStaging {
                 unique_valid_signers.len(),
                 threshold
             );
+            warn!(
+                "DAG-DBG remote_car_reject_threshold: lane={} n={} valid_sig={} threshold={}",
+                lane_id,
+                car.n,
+                unique_valid_signers.len(),
+                threshold
+            );
             return Ok(());
         }
 
@@ -769,6 +879,10 @@ impl LaneStaging {
                 );
                 self.request_lane_backfill_for_car(lane_id, &sender_name, &car, last_index_needed)
                     .await?;
+                debug!(
+                    "DAG-DBG remote_car_backfill_requested: lane={} n={} last_index_needed={}",
+                    lane_id, car.n, last_index_needed
+                );
             }
         }
 
@@ -795,6 +909,13 @@ impl LaneStaging {
             warn!(
                 "Remote CAR digest mismatch or block still missing for lane {} seq {} - not attaching",
                 lane_id, car.n
+            );
+            warn!(
+                "DAG-DBG remote_car_reject_digest: lane={} n={} digest_len={} block_present={}",
+                lane_id,
+                car.n,
+                car.digest.len(),
+                have_block
             );
             return Ok(());
         }
@@ -852,11 +973,23 @@ impl LaneStaging {
                 match rx.recv().await.unwrap() {
                     CheckCarResult::Success => {
                         // ok, continue to attach child
+                        debug!(
+                            "DAG-DBG remote_car_parent_ok: lane={} child_n={} parent_n={}",
+                            lane_id,
+                            car.n,
+                            car.n - 1
+                        );
                     }
                     CheckCarResult::Failure => {
                         warn!(
                             "Rejecting CAR lane {} n {}: parent CAR exists with different digest",
                             lane_id, car.n
+                        );
+                        warn!(
+                            "DAG-DBG remote_car_reject_parent_digest: lane={} n={} parent_n={}",
+                            lane_id,
+                            car.n,
+                            car.n - 1
                         );
                         return Ok(());
                     }
@@ -865,6 +998,12 @@ impl LaneStaging {
                         self.add_pending_child(lane_id, car.n - 1, car.clone());
                         trace!(
                             "Queued CAR lane {} n {} pending parent n {} (not exists)",
+                            lane_id,
+                            car.n,
+                            car.n - 1
+                        );
+                        debug!(
+                            "DAG-DBG remote_car_parent_missing_queue: lane={} n={} parent_n={}",
                             lane_id,
                             car.n,
                             car.n - 1
@@ -878,6 +1017,12 @@ impl LaneStaging {
         info!(
             "Accepting remote CAR from {} for lane {} seq {} with {} signatures",
             sender_name,
+            lane_id,
+            car.n,
+            car.sig.len()
+        );
+        debug!(
+            "DAG-DBG remote_car_accept: lane={} n={} sig_count={}",
             lane_id,
             car.n,
             car.sig.len()
@@ -916,6 +1061,10 @@ impl LaneStaging {
 
         // Update tip cut with this remote CAR (latest per-lane CAR)
         self.update_tip_cut(lane_id.clone(), car.clone());
+        debug!(
+            "DAG-DBG tipcut_update_after_remote_car: lane={} n={}",
+            lane_id, car.n
+        );
 
         // Process any children now unblocked by this CAR
         self.process_pending_children(lane_id, car.n).await?;
@@ -1163,14 +1312,18 @@ impl LaneStaging {
             if n <= u {
                 return 1;
             }
-            u + 1
+            // u + 1
+            // I count as 1
+            u
         }
 
         #[cfg(not(feature = "platforms"))]
         {
             let n = self.config.get().consensus_config.node_list.len();
             let f = n / 3;
-            f + 1
+            // f + 1
+            // I count as 1
+            f
         }
     }
 
@@ -1224,8 +1377,13 @@ impl LaneStaging {
     /// Update the current tip cut with a newly formed CAR.
     /// Called after we successfully form and broadcast a CAR.
     fn update_tip_cut(&mut self, lane_id: String, car: ProtoBlockCar) {
-        self.current_tip_cut.cars.insert(lane_id, car);
+        self.current_tip_cut.cars.insert(lane_id.clone(), car);
         self.current_tip_cut.view = self.view;
         self.current_tip_cut.config_num = self.config_num;
+        debug!(
+            "DAG-DBG tipcut_size: lanes={} after_insert_lane={}",
+            self.current_tip_cut.cars.len(),
+            lane_id
+        );
     }
 }
