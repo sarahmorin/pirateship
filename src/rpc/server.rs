@@ -151,9 +151,12 @@ impl FrameReader {
             if self.bound == self.offset {
                 // Need to fetch more data.
                 let read_n = self.stream.read(self.buffer.as_mut()).await?;
-                debug!(
+                trace!(
                     "Fetched {} bytes, Need to fetch {} bytes, pos {}, Currently at: {}",
-                    read_n, get_n, pos, n
+                    read_n,
+                    get_n,
+                    pos,
+                    n
                 );
                 self.bound = read_n;
                 self.offset = 0;
@@ -350,7 +353,7 @@ where
         let hndl = tokio::spawn(async move {
             while let Some(resp) = resp_rx.recv().await {
                 if let Ok(RespType::Resp) = resp {
-                    debug!("Waiting for response!");
+                    trace!("Waiting for response!");
                     let mref: (PinnedMessage, LatencyProfile) = some_or_exit!(ack_rx.recv().await);
                     let mref = mref.0.as_ref();
                     if let Err(_) = tx_buf.write_u32(mref.1 as u32).await {
@@ -367,7 +370,7 @@ where
                         }
                     };
                 } else if let Ok(RespType::RespAndTrack) = resp {
-                    debug!("Waiting for response!");
+                    trace!("Waiting for response!");
                     let (mref, mut profile) = some_or_exit!(ack_rx.recv().await);
                     profile.register("Ack Received");
                     let mref = mref.as_ref();
@@ -384,7 +387,7 @@ where
                     profile.register("Ack sent");
                     profile.print();
                 } else if let Ok(RespType::RespAndTrackAndReconf) = resp {
-                    debug!("Waiting for response!");
+                    trace!("Waiting for response!");
                     let (mref, mut profile) = some_or_exit!(ack_rx.recv().await);
                     profile.register("Ack Received");
                     let mref = mref.as_ref();

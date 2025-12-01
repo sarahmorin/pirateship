@@ -290,6 +290,10 @@ impl BlockReceiver {
                 stats,
             };
 
+            info!(
+                "Forwarding verified block n={} from lane {} to broadcaster",
+                half_serialized.n, lane_id
+            );
             self.dag_broadcaster_tx.send(single_block).await.unwrap();
 
             // Update lane continuity with the hash of this block
@@ -320,6 +324,7 @@ impl BlockReceiver {
     }
 
     async fn handle_command(&mut self, cmd: BlockReceiverCommand) {
+        info!("Handling BlockReceiver command");
         match cmd {
             BlockReceiverCommand::UseBackfillResponse(block_lane, sender) => {
                 // For backfill responses, use the lane_id from the message if present
