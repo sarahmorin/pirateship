@@ -5,7 +5,7 @@ use std::{
     sync::Arc,
 };
 
-use log::{error, info, trace, warn};
+use log::{debug, error, info, trace, warn};
 use prost::Message as _;
 use tokio::sync::Mutex;
 
@@ -205,19 +205,19 @@ impl LaneLogServer {
             cmd = self.lane_logserver_rx.recv() => {
                 match cmd {
                     Some(LaneLogServerCommand::NewBlock(lane_id, block)) => {
-                        trace!("Received block {} for lane {}", block.block.n, lane_id);
+                        debug!("[DAG LANE LOGSERVER] Received block {} for lane {}", block.block.n, lane_id);
                         self.handle_new_block(lane_id, block).await;
                     },
                     Some(LaneLogServerCommand::NewCar(lane_id, car)) => {
-                        trace!("Received CAR n={} for lane {}", car.n, lane_id);
+                        debug!("[DAG LANE LOGSERVER] Received CAR n={} for lane {}", car.n, lane_id);
                         self.handle_new_car(lane_id, car).await;
                     },
                     Some(LaneLogServerCommand::Rollback(lane_id, n)) => {
-                        trace!("Rolling back lane {} to block {}", lane_id, n);
+                        debug!("[DAG LANE LOGSERVER] Rolling back lane {} to block {}", lane_id, n);
                         self.handle_rollback(lane_id, n).await;
                     },
                     Some(LaneLogServerCommand::UpdateBCI(n)) => {
-                        trace!("Updating BCI to {}", n);
+                        debug!("[DAG LANE LOGSERVER] Updating BCI to {}", n);
                         self.bci = n;
                     },
                     None => {
@@ -229,6 +229,7 @@ impl LaneLogServer {
 
             gc_req = self.lane_gc_rx.recv() => {
                 if let Some((lane_id, gc_n)) = gc_req {
+                    debug!("[DAG LANE LOGSERVER] Received GC request for lane {}", lane_id);
                     // GC only the specified lane up to sequence number gc_n
                     if let Some(lane) = self.lanes.get_mut(&lane_id) {
                         lane.retain(|block| block.block.n > gc_n);
@@ -241,6 +242,7 @@ impl LaneLogServer {
 
             backfill_req = self.backfill_request_rx.recv() => {
                 if let Some(backfill_req) = backfill_req {
+                    debug!("[DAG LANE LOGSERVER] Received backfill request from {}", backfill_req.reply_name);
                     self.respond_backfill(backfill_req).await?;
                 }
             },
@@ -257,6 +259,10 @@ impl LaneLogServer {
 
     /// Get block from lane at index n.
     async fn get_block(&mut self, lane_id: &String, n: u64) -> Option<CachedBlock> {
+        debug!(
+            "[DAG LANE LOGSERVER] get_block: lane_id={}, n={}",
+            lane_id, n
+        );
         let lane = self.lanes.get(lane_id)?;
         let last_n = lane.back()?.block.n;
 
@@ -277,6 +283,7 @@ impl LaneLogServer {
 
     /// Get CAR from lane at index n.
     async fn get_car(&mut self, lane_id: &String, n: u64) -> Option<ProtoBlockCar> {
+        debug!("[DAG LANE LOGSERVER] get_car: lane_id={}, n={}", lane_id, n);
         let cars = self.lane_cars.get(lane_id)?;
         let last_n = *cars.keys().next_back()?;
 
@@ -720,11 +727,12 @@ impl LaneLogServer {
         // Insert/replace CAR at sequence number
         car_map.insert(car.n, car.clone());
 
-        if self.persist_cars {
-            let key = Self::car_storage_key(&lane_id, car.n);
-            let ser = car.encode_to_vec();
-            let _ = self.storage.put_raw(key, ser).await; // fire-and-forget
-        }
+        // FIXME: Persist CAR to storage
+        // if self.persist_cars {
+        //     let key = Self::car_storage_key(&lane_id, car.n);
+        //     let ser = car.encode_to_vec();
+        //     let _ = self.storage.put_raw(key, ser).await; // fire-and-forget
+        // }
     }
 
     fn car_storage_key(lane_id: &str, n: u64) -> String {
