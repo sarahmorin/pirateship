@@ -5,7 +5,7 @@ mod block_sequencer;
 pub mod block_tipcut;
 pub mod client_reply;
 #[cfg(feature = "dag")]
-mod dag;
+pub mod dag;
 pub mod engines;
 pub mod extra_2pc;
 pub mod fork_receiver;

@@ -266,15 +266,16 @@ impl BatchProposer {
     async fn propose_new_batch(&mut self) {
         self.last_batch_proposed = Instant::now();
         let batch = self.current_raw_batch.take().unwrap();
-        debug!(
-            "[DAG-DISSEMINATION] BatchProposer proposing batch with {} txs",
-            batch.len()
-        );
+        if batch.len() > 0 {
+            debug!(
+                "[DAG-DISSEMINATION] BatchProposer proposing batch with {} txs",
+                batch.len()
+            );
+        }
         self.current_raw_batch = Some(RawBatch::with_capacity(
             self.config.get().consensus_config.max_backlog_batch_size,
         ));
         let reply_chans = self.current_reply_vec.drain(..).collect();
-        debug!("[DAG-DISSEMINATION] BatchProposer sending batch to BlockSequencer");
         let _ = self.dag_block_seq_tx.send((batch, reply_chans)).await;
         self.perf_event_and_deregister_all("Propose batch");
         self.batch_timer.reset();

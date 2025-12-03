@@ -29,7 +29,7 @@ use tokio::sync::{oneshot, Mutex};
 
 use crate::{
     config::AtomicConfig,
-    consensus::block_tipcut::BlockOrTipCut,
+    consensus::BlockOrTipCut,
     crypto::{CachedBlock, CryptoServiceConnector},
     proto::{
         consensus::{HalfSerializedBlock, ProtoAppendBlocks},
@@ -44,7 +44,7 @@ use crate::{
 
 use super::{
     super::app::AppCommand,
-    block_receiver::{AppendBlockStats, BlockReceiverCommand, SingleBlock},
+    block_receiver::{AppendBlockStats, BlockReceiverCommand, MultiPartLane},
 };
 
 pub enum DagBlockBroadcasterCommand {
@@ -66,7 +66,7 @@ pub struct DagBlockBroadcaster {
 
     // Input ports
     my_block_rx: Receiver<(u64, oneshot::Receiver<BlockOrTipCut>)>,
-    other_block_rx: Receiver<SingleBlock>,
+    other_block_rx: Receiver<MultiPartLane>,
     control_command_rx: Receiver<DagBlockBroadcasterCommand>,
 
     // Output ports
@@ -78,7 +78,6 @@ pub struct DagBlockBroadcaster {
         AppendBlockStats,
         bool, /* this_is_final_block */
     )>,
-
     // Command ports
     block_receiver_command_tx: Sender<BlockReceiverCommand>,
     app_command_tx: Sender<AppCommand>,
@@ -93,7 +92,7 @@ impl DagBlockBroadcaster {
         client: PinnedClient,
         crypto: CryptoServiceConnector,
         my_block_rx: Receiver<(u64, oneshot::Receiver<BlockOrTipCut>)>,
-        other_block_rx: Receiver<SingleBlock>,
+        other_block_rx: Receiver<MultiPartLane>,
         control_command_rx: Receiver<DagBlockBroadcasterCommand>,
         storage: StorageServiceConnector,
         lane_staging_tx: Sender<(
@@ -191,7 +190,7 @@ impl DagBlockBroadcaster {
                 let block = block.unwrap();
                 let __n = block.0;
 
-                debug!("[DAG-DISSEMINATION] BlockBroadcaster received block {} from sequencer", __n);
+                trace!("[DAG-DISSEMINATION] BlockBroadcaster received block {} from sequencer", __n);
                 let perf_entry = block.0;
                 self.perf_register(perf_entry);
                 let block = block.1.await;
@@ -201,22 +200,19 @@ impl DagBlockBroadcaster {
                     return Ok(());
                 }
                 if let BlockOrTipCut::Block(b) = block.unwrap() {
-                    debug!("[DAG-DISSEMINATION] BlockBroadcaster processing my block {}", __n);
                     self.process_my_block(b).await?;
                 } else {
                     error!("Expected block but got tipcut for block {}", __n);
                     return Ok(());
                 }
-
-                debug!("[DAG-DISSEMINATION] BlockBroadcaster completed processing block {}", __n);
             },
 
-            block_vec = self.other_block_rx.recv() => {
-                if block_vec.is_none() {
+            lane_msg = self.other_block_rx.recv() => {
+                if lane_msg.is_none() {
                     return Err(Error::new(ErrorKind::BrokenPipe, "other_block_rx channel closed"));
                 }
-                let blocks = block_vec.unwrap();
-                self.process_other_single_block(blocks).await?;
+                let lane = lane_msg.unwrap();
+                self.process_other_lane(lane).await?;
             },
 
             // Control channel is optional in DAG wiring; if it's closed, keep running without it
@@ -303,7 +299,10 @@ impl DagBlockBroadcaster {
     }
 
     async fn process_my_block(&mut self, block: CachedBlock) -> Result<(), Error> {
-        debug!("Processing my block {}", block.block.n);
+        trace!(
+            "[DAG-DISSEMINATION] BlockBroadcaster processing my block {}",
+            block.block.n
+        );
         let perf_entry = block.block.n;
 
         let (view, view_is_stable, config_num) = (
@@ -341,18 +340,6 @@ impl DagBlockBroadcaster {
             .await?;
         }
 
-        // Broadcast batched blocks to all other nodes in a single AppendBlocks message
-        let names = self.get_everyone_except_me();
-        self.broadcast_blocks(
-            names,
-            lane_batch,
-            view,
-            view_is_stable,
-            config_num,
-            Some(perf_entry),
-        )
-        .await;
-
         // Notify app for stats
         self.app_command_tx
             .send(AppCommand::NewRequestBatch(
@@ -366,40 +353,65 @@ impl DagBlockBroadcaster {
             .await
             .unwrap();
 
+        // Broadcast batched blocks to all other nodes in a single AppendBlocks message
+        let names = self.get_everyone_except_me();
+        self.broadcast_blocks(
+            names,
+            lane_batch,
+            view,
+            view_is_stable,
+            config_num,
+            Some(perf_entry),
+        )
+        .await;
+
         Ok(())
     }
 
-    async fn process_other_single_block(&mut self, block: SingleBlock) -> Result<(), Error> {
-        let cached_block = match block.block_future.await {
-            Ok(Ok(b)) => b,
-            Ok(Err(e)) => {
-                error!("Failed to verify block: {:?}", e);
-                return Ok(());
+    /// Process a multipart lane of verified blocks from BlockReceiver
+    async fn process_other_lane(&mut self, mut lane: MultiPartLane) -> Result<(), Error> {
+        trace!(
+            "[DAG-DISSEMINATION] BlockBroadcaster processing other lane from {}",
+            lane.ab_stats.lane_id
+        );
+        // Await all futures into concrete blocks
+        let mut blocks: Vec<CachedBlock> = Vec::new();
+        for fut_opt in lane.lane_future.iter_mut() {
+            if let Some(fut) = fut_opt.take() {
+                match fut.await {
+                    Ok(Ok(block)) => blocks.push(block),
+                    Ok(Err(e)) => {
+                        error!("Failed to verify lane block: {:?}", e);
+                        return Ok(());
+                    }
+                    Err(e) => {
+                        error!("Failed to receive lane block future: {:?}", e);
+                        return Ok(());
+                    }
+                }
             }
-            Err(e) => {
-                error!("Failed to receive block future: {:?}", e);
-                return Ok(());
-            }
-        };
+        }
 
-        let (view, view_is_stable) = (block.stats.view, block.stats.view_is_stable);
+        // Store and forward each block internally; only mark the last as final
+        let total = blocks.len();
+        for (idx, blk) in blocks.into_iter().enumerate() {
+            let is_last = idx + 1 == total;
+            self.store_and_forward_internally(&blk, lane.ab_stats.clone(), is_last)
+                .await?;
 
-        // Store and forward the single block
-        self.store_and_forward_internally(&cached_block, block.stats.clone(), true)
-            .await?;
-
-        // Forward to app for stats
-        self.app_command_tx
-            .send(AppCommand::NewRequestBatch(
-                cached_block.block.n,
-                view,
-                view_is_stable,
-                self.i_am_leader(view),
-                cached_block.block.tx_list.len(),
-                cached_block.block_hash.clone(),
-            ))
-            .await
-            .unwrap();
+            // Forward to app for stats
+            self.app_command_tx
+                .send(AppCommand::NewRequestBatch(
+                    blk.block.n,
+                    lane.ab_stats.view,
+                    lane.ab_stats.view_is_stable,
+                    self.i_am_leader(lane.ab_stats.view),
+                    blk.block.tx_list.len(),
+                    blk.block_hash.clone(),
+                ))
+                .await
+                .unwrap();
+        }
 
         Ok(())
     }
@@ -465,7 +477,6 @@ impl DagBlockBroadcaster {
             self.get_car_broadcast_threshold(),
         )
         .await;
-        info!("Broadcast finished to {:?}", names);
 
         if should_perf {
             self.perf_add_event(perf_entry, "Forward block to other nodes");

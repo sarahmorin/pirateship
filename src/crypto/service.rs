@@ -37,9 +37,12 @@ use crate::{
 };
 
 #[cfg(feature = "dag")]
-use crate::utils::{
-    serialize_proto_tipcut_nascent, update_parent_hash_in_proto_tipcut_ser,
-    update_signature_in_proto_tipcut_ser,
+use crate::{
+    consensus::dag::block_receiver::{AppendBlockStats, MultiPartLane},
+    utils::{
+        serialize_proto_tipcut_nascent, update_parent_hash_in_proto_tipcut_ser,
+        update_signature_in_proto_tipcut_ser,
+    },
 };
 
 #[cfg(feature = "dag")]
@@ -1074,6 +1077,40 @@ impl CryptoServiceConnector {
                 fork_future,
                 remaining_parts,
                 ae_stats,
+            },
+            hash_receivers,
+        )
+    }
+
+    pub async fn prepare_lane(
+        &mut self,
+        mut part: Vec<HalfSerializedBlock>,
+        remaining_parts: usize,
+        ab_stats: AppendBlockStats,
+    ) -> (
+        MultiPartLane,
+        Vec<oneshot::Receiver<Result<HashType, Error>>>,
+    ) {
+        let mut lane_future = Vec::with_capacity(part.len());
+        let mut hash_receivers = Vec::new();
+        for e in part.drain(..) {
+            let (tx, rx) = oneshot::channel();
+            let (tx2, rx2) = oneshot::channel();
+            self.dispatch(CryptoServiceCommand::VerifyBlockSer(
+                0,
+                e.serialized_body,
+                tx,
+                tx2,
+            ))
+            .await;
+            lane_future.push(Some(rx));
+            hash_receivers.push(rx2);
+        }
+        (
+            MultiPartLane {
+                lane_future,
+                remaining_parts,
+                ab_stats,
             },
             hash_receivers,
         )
