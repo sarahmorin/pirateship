@@ -37,7 +37,7 @@ use crate::{
 
 #[cfg(feature = "dag")]
 use crate::{
-    consensus::dag::block_receiver::BlockReceiverCommand,
+    consensus::dag::{block_receiver::BlockReceiverCommand, tip_cut_proposal::RawTipCut},
     proto::consensus::{
         ProtoAppendBlocks, ProtoBlockAck, ProtoBlockCar, ProtoExecutionResults, ProtoTipCut,
     },
@@ -90,7 +90,7 @@ pub struct ConsensusServerContext {
     #[cfg(feature = "dag")]
     car_tx: Sender<(ProtoBlockCar, SenderType)>,
     #[cfg(feature = "dag")]
-    tipcut_proposal_tx: Sender<ProtoTipCut>,
+    tipcut_proposal_tx: Sender<RawTipCut>,
     #[cfg(feature = "dag")]
     execution_results_tx: Sender<ProtoExecutionResults>,
     #[cfg(feature = "dag")]
@@ -114,7 +114,7 @@ impl PinnedConsensusServerContext {
         #[cfg(feature = "dag")] block_receiver_command_tx: Sender<BlockReceiverCommand>,
         #[cfg(feature = "dag")] block_ack_tx: Sender<(ProtoBlockAck, SenderType)>,
         #[cfg(feature = "dag")] car_tx: Sender<(ProtoBlockCar, SenderType)>,
-        #[cfg(feature = "dag")] tipcut_proposal_tx: Sender<ProtoTipCut>,
+        #[cfg(feature = "dag")] tipcut_proposal_tx: Sender<RawTipCut>,
         #[cfg(feature = "dag")] execution_results_tx: Sender<ProtoExecutionResults>,
         #[cfg(feature = "dag")] byz_results_tx: Sender<ProtoByzResults>,
     ) -> Self {
@@ -259,11 +259,6 @@ impl ServerContextType for PinnedConsensusServerContext {
                             proto_append_block_lane.encoded_len()
                         );
                         return Ok(RespType::NoResp);
-                        // QUESTION: Should we handle these messages differently?
-                        // self.block_receiver_tx
-                        //     .send((proto_append_block_lane.ab.unwrap(), sender))
-                        //     .await
-                        //     .expect("Channel send error");
                     }
                 }
 
@@ -311,20 +306,20 @@ impl ServerContextType for PinnedConsensusServerContext {
                 return Ok(RespType::NoResp);
             }
             // TipCut proposals are routed to the TipCutProposal handler in DAG-mode, otherwise ignored
-            crate::proto::rpc::proto_payload::Message::TipCut(proto_tip_cut) => {
-                #[cfg(feature = "dag")]
-                {
-                    self.tipcut_proposal_tx
-                        .send(proto_tip_cut)
-                        .await
-                        .expect("Channel send error");
-                }
-                #[cfg(not(feature = "dag"))]
-                {
-                    warn!("Received TipCut in leader mode - ignoring");
-                }
-                return Ok(RespType::NoResp);
-            }
+            // crate::proto::rpc::proto_payload::Message::TipCut(proto_tip_cut) => {
+            //     #[cfg(feature = "dag")]
+            //     {
+            //         self.tipcut_proposal_tx
+            //             .send(proto_tip_cut)
+            //             .await
+            //             .expect("Channel send error");
+            //     }
+            //     #[cfg(not(feature = "dag"))]
+            //     {
+            //         warn!("Received TipCut in leader mode - ignoring");
+            //     }
+            //     return Ok(RespType::NoResp);
+            // }
             // ExecutionResults messages are forwarded to ClientReplyHandler in DAG-mode, otherwise ignored
             crate::proto::rpc::proto_payload::Message::ExecutionResults(
                 proto_execution_results,
