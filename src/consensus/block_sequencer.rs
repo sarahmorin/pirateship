@@ -7,7 +7,7 @@ use std::{pin::Pin, sync::Arc, time::Duration};
 use crate::consensus::block_broadcaster;
 use crate::consensus::block_tipcut::BlockOrTipCut;
 #[cfg(feature = "dag")]
-use crate::consensus::dag::tip_cut_proposal;
+use crate::consensus::dag::tip_cut_proposal::{self, RawTipCut};
 use crate::crypto::{default_hash, FutureHash};
 use crate::utils::channel::{Receiver, Sender};
 use log::{debug, error, info, trace, warn};
@@ -63,7 +63,7 @@ pub struct BlockSequencer {
     #[cfg(not(feature = "dag"))]
     batch_rx: Receiver<(RawBatch, Vec<MsgAckChanWithTag>)>,
     #[cfg(feature = "dag")]
-    tipcut_rx: Receiver<ProtoTipCut>,
+    tipcut_rx: Receiver<RawTipCut>,
 
     signature_timer: Arc<Pin<Box<ResettableTimer>>>,
 
@@ -96,7 +96,7 @@ impl BlockSequencer {
         config: AtomicConfig,
         control_command_rx: Receiver<BlockSequencerControlCommand>,
         #[cfg(not(feature = "dag"))] batch_rx: Receiver<(RawBatch, Vec<MsgAckChanWithTag>)>,
-        #[cfg(feature = "dag")] tipcut_rx: Receiver<ProtoTipCut>,
+        #[cfg(feature = "dag")] tipcut_rx: Receiver<RawTipCut>,
         qc_rx: UnboundedReceiver<ProtoQuorumCertificate>,
         block_broadcaster_tx: Sender<(u64, oneshot::Receiver<BlockOrTipCut>)>,
         client_reply_tx: Sender<(oneshot::Receiver<HashType>, Vec<MsgAckChanWithTag>)>,
@@ -383,7 +383,7 @@ impl BlockSequencer {
     async fn handle_new_batch(
         &mut self,
         #[cfg(not(feature = "dag"))] batch: RawBatch,
-        #[cfg(feature = "dag")] tipcut: ProtoTipCut,
+        #[cfg(feature = "dag")] tipcut: RawTipCut,
         #[cfg(not(feature = "dag"))] replies: Vec<MsgAckChanWithTag>,
         #[cfg(not(feature = "dag"))] fork_validation: Vec<ProtoForkValidation>,
         #[cfg(feature = "dag")] fork_validation: Vec<ProtoTipCutValidation>,
@@ -439,7 +439,7 @@ impl BlockSequencer {
         // FIXME: this is clunky fix it later
         #[cfg(feature = "dag")]
         let tipcut = ProtoTipCut {
-            tips: tipcut.tips.clone(),
+            tips: tipcut.clone(),
             n,
             parent: Vec::new(),
             view: self.view,

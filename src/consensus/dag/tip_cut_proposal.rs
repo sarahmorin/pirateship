@@ -20,10 +20,12 @@ use std::{cmp, sync::Arc};
 use log::{debug, error, info, trace, warn};
 use tokio::sync::{oneshot, Mutex};
 
+use crate::consensus::batch_proposal::MsgAckChanWithTag;
+use crate::rpc::server::MsgAckChan;
 use crate::{
     config::AtomicConfig,
     crypto::HashType,
-    proto::consensus::{DefferedSignature, ProtoTipCut, ProtoTipCutValidation},
+    proto::consensus::{DefferedSignature, ProtoBlockCar, ProtoTipCut, ProtoTipCutValidation},
     utils::{
         channel::{Receiver, Sender},
         timer::ResettableTimer,
@@ -31,6 +33,8 @@ use crate::{
 };
 
 use super::lane_staging::{LaneStagingQuery, TipCut};
+
+pub type RawTipCut = Vec<ProtoBlockCar>;
 
 /// Commands to control TipCutProposal behavior
 #[derive(Debug, Clone)]
@@ -70,7 +74,7 @@ pub struct TipCutProposal {
     lane_staging_query_tx: Sender<LaneStagingQuery>,
 
     // Send tip cuts to BlockSequencer for wrapping and broadcasting
-    consensus_sequencer_tx: Sender<ProtoTipCut>,
+    consensus_sequencer_tx: Sender<RawTipCut>,
 
     // Command channel for view changes and leadership updates
     cmd_rx: Receiver<TipCutProposalCommand>,
@@ -80,7 +84,7 @@ impl TipCutProposal {
     pub fn new(
         config: AtomicConfig,
         lane_staging_query_tx: Sender<LaneStagingQuery>,
-        consensus_sequencer_tx: Sender<ProtoTipCut>,
+        consensus_sequencer_tx: Sender<RawTipCut>,
         cmd_rx: Receiver<TipCutProposalCommand>,
     ) -> Self {
         // Get initial configuration
@@ -243,16 +247,10 @@ impl TipCutProposal {
             }
         };
 
-        // Check if tip cut is valid (has at least one CAR)
-        // if tip_cut.cars.is_empty() {
-        //     // debug!("Tip cut is empty, skipping proposal");
-        //     // return Ok(());
-        // }
-
         // If using threshold-based proposal, check if enough CARs are present
         if use_threshold && tip_cut.cars.len() < self.tip_cut_max_cars {
             info!(
-                "Not enough CARs for tip cut proposal: have {}, need {}",
+                "Not enough CARs for tip cut proposal without timer tick: have {}, need {}",
                 tip_cut.cars.len(),
                 self.tip_cut_max_cars
             );
@@ -269,31 +267,13 @@ impl TipCutProposal {
         // Collect CARs into a vec
         let cars: Vec<_> = tip_cut.cars.into_values().collect();
 
-        // Construct ProtoTipCut message
-        let proto_tip_cut = ProtoTipCut {
-            tips: cars,
-            n: 0,           // Will be assigned by BlockSequencer as chain sequence
-            parent: vec![], // Will be computed by BlockSequencer
-            view: self.view,
-            qc: vec![],            // Will be computed by BlockSequencer
-            tc_validation: vec![], // Will be computed by BlockSequencer
-            view_is_stable: self.view_is_stable,
-            config_num: self.config_num,
-            sig: Some(crate::proto::consensus::proto_tip_cut::Sig::NoSig(
-                DefferedSignature {},
-            )),
-        };
-
         // Send to BlockSequencer which will:
         // 1. Compute digest and parent
         // 2. Send to BlockBroadcaster
         // 3. BlockBroadcaster wraps in AppendEntries and broadcasts to all nodes
-        self.consensus_sequencer_tx
-            .send(proto_tip_cut)
-            .await
-            .map_err(|e| {
-                error!("Failed to send tip cut to BlockSequencer: {:?}", e);
-            })?;
+        self.consensus_sequencer_tx.send(cars).await.map_err(|e| {
+            error!("Failed to send tip cut to BlockSequencer: {:?}", e);
+        })?;
 
         info!("Sent tip cut to BlockSequencer for sequencing and broadcasting");
         Ok(())
@@ -301,6 +281,7 @@ impl TipCutProposal {
 
     /// Query lane_staging for the current tip cut.
     async fn query_tip_cut(&mut self) -> Result<Option<TipCut>, ()> {
+        debug!("Querying LaneStaging for current tip cut");
         let (reply_tx, reply_rx) = oneshot::channel();
 
         // Send query
