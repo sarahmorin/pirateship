@@ -850,16 +850,12 @@ impl LaneStaging {
                 } else {
                     car.n.saturating_sub(100)
                 };
-                trace!(
-                    "Missing block for remote CAR lane {} seq {} (max local seq {}), requesting backfill from {}",
+                debug!(
+                    "[DAG LANE STAGING] Missing block for remote CAR lane {} seq {} (max local seq {}), requesting backfill from {}",
                     lane_id, car.n, max_seq_we_have, sender_name
                 );
                 self.request_lane_backfill_for_car(lane_id, &sender_name, &car, last_index_needed)
                     .await?;
-                debug!(
-                    "[DAG LANE STAGING] remote_car_backfill_requested: lane={} n={} last_index_needed={}",
-                    lane_id, car.n, last_index_needed
-                );
             }
         }
 
@@ -909,7 +905,7 @@ impl LaneStaging {
                 // Shouldn't happen if child block exists, but be safe: queue pending
                 // QUESTION: should we queue here? seems like a block form problem
                 self.add_pending_child(lane_id, car.n - 1, car.clone());
-                trace!(
+                warn!(
                     "Queued CAR lane {} n {} pending parent n {} (no parent digest)",
                     lane_id,
                     car.n,
@@ -990,35 +986,21 @@ impl LaneStaging {
         }
 
         // Persist remote CAR in lane_logserver if not present
-        // TODO: Should we just overwrite the car always?
         {
-            use crate::utils::channel::make_channel;
-            let (tx, rx) = make_channel(1);
-            self.lane_logserver_query_tx
-                .send(LaneLogServerQuery::CheckCar(
-                    lane_id.clone(),
-                    car.n,
-                    car.digest.clone(),
-                    tx,
-                ))
+            // Insert new CAR
+            self.lane_logserver_tx
+                .send(LaneLogServerCommand::NewCar(lane_id.clone(), car.clone()))
                 .await
                 .unwrap();
-            if matches!(rx.recv().await.unwrap(), CheckCarResult::NotExists) {
-                // Insert new CAR
-                self.lane_logserver_tx
-                    .send(LaneLogServerCommand::NewCar(lane_id.clone(), car.clone()))
-                    .await
-                    .unwrap();
-                // Update tip cut with this remote CAR (latest per-lane CAR)
-                self.update_tip_cut(lane_id.clone(), car.clone());
-                debug!(
-                    "[DAG LANE STAGING] tipcut_update_after_remote_car: lane={} n={}",
-                    lane_id, car.n
-                );
+            // Update tip cut with this remote CAR (latest per-lane CAR)
+            self.update_tip_cut(lane_id.clone(), car.clone());
+            debug!(
+                "[DAG LANE STAGING] tipcut_update_after_remote_car: lane={} n={}",
+                lane_id, car.n
+            );
 
-                // Process any children now unblocked by this CAR
-                self.process_pending_children(lane_id, car.n).await?;
-            }
+            // Process any children now unblocked by this CAR
+            self.process_pending_children(lane_id, car.n).await?;
         }
 
         Ok(())

@@ -155,10 +155,12 @@ impl Staging {
         let n = btc.n();
         if self.pending_votes.len() == 0 {
             if self.curr_parent_for_pending.is_none() {
+                warn!("No current parent for pending blocks, n==1");
                 return n == 1;
             } else {
                 let parent = btc.parent();
 
+                warn!("Checking parent for pending blocks");
                 return parent.eq(&self.curr_parent_for_pending.as_ref().unwrap().digest())
                     && n == self.curr_parent_for_pending.as_ref().unwrap().n() + 1;
             }
@@ -480,7 +482,7 @@ impl Staging {
             }
             // Invariant <ViewLock>: Within the same view, the log must be append-only.
             if !self.check_continuity(&btc) {
-                warn!("Continuity broken");
+                warn!("Continuity broken, process_btc_as_leader");
                 if btc.n() == self.bci {
                     // This is just a sanity check.
                     if self.curr_parent_for_pending.is_some()
@@ -664,7 +666,7 @@ impl Staging {
 
             // Invariant <ViewLock>: Within the same view, the log must be append-only.
             if !self.check_continuity(&btc) {
-                warn!("Continuity broken");
+                warn!("Continuity broken, process_btc_as_follower");
                 return Ok(());
             }
         } else {
