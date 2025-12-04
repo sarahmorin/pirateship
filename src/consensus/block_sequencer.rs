@@ -6,6 +6,8 @@ use std::{pin::Pin, sync::Arc, time::Duration};
 #[cfg(feature = "dag")]
 use crate::consensus::block_broadcaster;
 use crate::consensus::block_tipcut::BlockOrTipCut;
+#[cfg(feature = "dag")]
+use crate::consensus::dag::tip_cut_proposal;
 use crate::crypto::{default_hash, FutureHash};
 use crate::utils::channel::{Receiver, Sender};
 use log::{debug, error, info, trace, warn};
@@ -369,7 +371,7 @@ impl BlockSequencer {
                         self.handle_control_command(_cmd).await;
                     },
                     _tipcut = self.tipcut_rx.recv() => {
-                        trace!("Dropping tipcut because not leader or view not stable");
+                        warn!("Dropping tipcut because not leader or view not stable");
                     },
                 }
             }
@@ -430,6 +432,22 @@ impl BlockSequencer {
             config_num: self.config_num,
             tx_list: batch,
             sig: Some(crate::proto::consensus::proto_block::Sig::NoSig(
+                DefferedSignature {},
+            )),
+        };
+
+        // FIXME: this is clunky fix it later
+        #[cfg(feature = "dag")]
+        let tipcut = ProtoTipCut {
+            tips: tipcut.tips.clone(),
+            n,
+            parent: Vec::new(),
+            view: self.view,
+            qc: qc_list,
+            tc_validation: fork_validation,
+            view_is_stable: self.view_is_stable,
+            config_num: self.config_num,
+            sig: Some(crate::proto::consensus::proto_tip_cut::Sig::NoSig(
                 DefferedSignature {},
             )),
         };
