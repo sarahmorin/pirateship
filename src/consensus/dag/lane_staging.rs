@@ -185,7 +185,7 @@ impl LaneStaging {
 
     async fn worker(&mut self) -> Result<(), ()> {
         tokio::select! {
-            biased;
+            // biased;
             block = self.block_rx.recv() => {
                 if block.is_none() {
                     return Err(());
@@ -647,6 +647,28 @@ impl LaneStaging {
         Ok(())
     }
 
+    fn get_everyone_except_me(&self) -> Vec<String> {
+        let config = self.config.get();
+        let me = &config.net_config.name;
+        let mut node_list = config
+            .consensus_config
+            .node_list
+            .iter()
+            .filter(|e| *e != me)
+            .map(|e| e.clone())
+            .collect::<Vec<_>>();
+
+        node_list.extend(
+            config
+                .consensus_config
+                .learner_list
+                .iter()
+                .map(|e| e.clone()),
+        );
+
+        node_list
+    }
+
     /// Broadcast a formed CAR to all nodes.
     // HACK: Do a better broadcasting implementation later
     // - Can add the piggyback optimization later
@@ -668,14 +690,16 @@ impl LaneStaging {
         let buf = payload.encode_to_vec();
         let sz = buf.len();
         let reply = PinnedMessage::from(buf, sz, SenderType::Anon);
+        let names = self.get_everyone_except_me();
 
         let _ = PinnedClient::broadcast(
             &self.client,
-            &config.consensus_config.node_list,
+            &names,
             &reply.clone(),
             &mut LatencyProfile::new(),
-            0,
-        );
+            self.car_threshold(),
+        )
+        .await;
 
         Ok(())
     }
@@ -758,7 +782,7 @@ impl LaneStaging {
                 .node_list
                 .contains(&signed.name)
             {
-                trace!("Ignoring CAR signature from unknown signer {}", signed.name);
+                warn!("Ignoring CAR signature from unknown signer {}", signed.name);
                 continue;
             }
 
@@ -770,7 +794,7 @@ impl LaneStaging {
             // Parse signature
             let Ok(sig_bytes): Result<[u8; SIGNATURE_LENGTH], _> = signed.sig.clone().try_into()
             else {
-                trace!(
+                warn!(
                     "Malformed signature for signer {} in CAR — skipping",
                     signed.name
                 );
