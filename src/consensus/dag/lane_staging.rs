@@ -33,7 +33,7 @@ use crate::{
         consensus::{ProtoBlockAck, ProtoBlockCar, ProtoNameWithSignature},
         rpc::{proto_payload, ProtoPayload},
     },
-    rpc::{client::PinnedClient, MessageRef, SenderType},
+    rpc::{client::PinnedClient, server::LatencyProfile, MessageRef, PinnedMessage, SenderType},
     utils::{
         channel::{Receiver, Sender},
         StorageAck,
@@ -336,7 +336,6 @@ impl LaneStaging {
             lane: lane_id.as_bytes().to_vec(),
             sig: sig.to_vec(),
         };
-        let threshold = self.car_threshold();
 
         // If we're the lane owner, no need to send an ack to ourselves.
         if lane_id == my_name {
@@ -421,6 +420,14 @@ impl LaneStaging {
             }
         };
 
+        info!(
+            "[DAG LANE STAGING] Verifying BlockAck: from={} lane={} n={} digest_len={} sig_len={}",
+            sender_name,
+            lane_id,
+            block_ack.n,
+            block_ack.digest.len(),
+            block_ack.sig.len()
+        );
         let verified = self
             .crypto
             .verify_nonblocking(digest_hash, sender_name.clone(), sig)
@@ -454,7 +461,7 @@ impl LaneStaging {
             }
         };
         if !lane_has_block {
-            debug!(
+            warn!(
                 "[DAG LANE STAGING] Received ack for unknown lane/block: lane={} n={} from={}",
                 lane_id, block_ack.n, sender_name
             );
@@ -519,38 +526,52 @@ impl LaneStaging {
                 return Ok(());
             }
 
-            // Check if we have enough acknowledgments
+            // Check if we have enough acknowledgments.
+            // Count the lane owner (self) implicitly as one signer.
             let threshold = self.car_threshold();
             let ack_count = stored_block.acknowledgments.len();
+            let effective_ack_count = ack_count.saturating_add(1);
 
-            if ack_count < threshold {
+            if effective_ack_count < threshold {
                 debug!(
-                    "[DAG LANE STAGING] car_wait: lane={} n={} acks={} threshold={} remaining={}",
+                    "[DAG LANE STAGING] car_wait: lane={} n={} acks={} (+self)={} threshold={} remaining={}",
                     lane_id,
                     seq_num,
                     ack_count,
+                    effective_ack_count,
                     threshold,
-                    threshold.saturating_sub(ack_count)
+                    threshold.saturating_sub(effective_ack_count)
                 );
                 return Ok(());
             }
 
             info!(
-                "[DAG LANE STAGING] Forming CAR for block n={} in lane {:?} (acks: {}/{})",
-                seq_num, lane_id, ack_count, threshold
+                "[DAG LANE STAGING] Forming CAR for block n={} in lane {:?} (acks including self: {}/{})",
+                seq_num, lane_id, effective_ack_count, threshold
             );
 
             // Collect the data we need
             let block_hash = stored_block.block.block_hash.clone();
             let view = stored_block.stats.view;
-            let acks: Vec<_> = stored_block
-                .acknowledgments
-                .iter()
-                .map(|(name, sig)| ProtoNameWithSignature {
+            // Build signature list: include self-signature first, then unique acks from others
+            let mut acks: Vec<ProtoNameWithSignature> = Vec::new();
+            let my_name = self.config.get().net_config.name.clone();
+            let self_sig = self.crypto.sign(&block_hash).await.to_vec();
+            acks.push(ProtoNameWithSignature {
+                name: my_name.clone(),
+                sig: self_sig,
+            });
+
+            for (name, sig) in stored_block.acknowledgments.iter() {
+                // Avoid accidentally duplicating self
+                if *name == my_name {
+                    continue;
+                }
+                acks.push(ProtoNameWithSignature {
                     name: name.clone(),
                     sig: sig.clone(),
-                })
-                .collect();
+                });
+            }
 
             (true, block_hash, view, acks)
         };
@@ -591,30 +612,10 @@ impl LaneStaging {
             }
         } // drop mutable borrow before awaits
 
-        // Persist CAR in lane_logserver before broadcasting
-        // Insert only if it doesn't exist yet
-        // NOTE: If there's a hash collision, we overwrite - this is extremely unlikely
-        let should_insert = {
-            use crate::utils::channel::make_channel;
-            let (tx, rx) = make_channel(1);
-            self.lane_logserver_query_tx
-                .send(LaneLogServerQuery::CheckCar(
-                    lane_id.clone(),
-                    seq_num,
-                    car.digest.clone(),
-                    tx,
-                ))
-                .await
-                .unwrap();
-            matches!(rx.recv().await.unwrap(), CheckCarResult::NotExists)
-        };
-
-        if should_insert {
-            self.lane_logserver_tx
-                .send(LaneLogServerCommand::NewCar(lane_id.clone(), car.clone()))
-                .await
-                .unwrap();
-        }
+        self.lane_logserver_tx
+            .send(LaneLogServerCommand::NewCar(lane_id.clone(), car.clone()))
+            .await
+            .unwrap();
 
         // Broadcast the CAR to all nodes
         self.broadcast_car(car.clone()).await?;
@@ -651,9 +652,8 @@ impl LaneStaging {
     // - Can add the piggyback optimization later
     async fn broadcast_car(&mut self, car: ProtoBlockCar) -> Result<(), ()> {
         let config = self.config.get();
-        let my_name = &config.net_config.name;
 
-        debug!(
+        info!(
             "[DAG LANE STAGING] car_broadcast: origin={} n={} sig_count={} recipients={} digest_len={}",
             car.origin_node,
             car.n,
@@ -667,14 +667,15 @@ impl LaneStaging {
         };
         let buf = payload.encode_to_vec();
         let sz = buf.len();
+        let reply = PinnedMessage::from(buf, sz, SenderType::Anon);
 
-        for node in &config.consensus_config.node_list {
-            if node == my_name {
-                continue;
-            }
-            let _ = PinnedClient::send(&self.client, node, MessageRef(&buf, sz, &SenderType::Anon))
-                .await;
-        }
+        let _ = PinnedClient::broadcast(
+            &self.client,
+            &config.consensus_config.node_list,
+            &reply.clone(),
+            &mut LatencyProfile::new(),
+            0,
+        );
 
         Ok(())
     }
@@ -965,7 +966,7 @@ impl LaneStaging {
         }
 
         // Persist remote CAR in lane_logserver if not present
-        // TODO: Shouldw e just overwrite the car always?
+        // TODO: Should we just overwrite the car always?
         {
             use crate::utils::channel::make_channel;
             let (tx, rx) = make_channel(1);
@@ -979,22 +980,22 @@ impl LaneStaging {
                 .await
                 .unwrap();
             if matches!(rx.recv().await.unwrap(), CheckCarResult::NotExists) {
+                // Insert new CAR
                 self.lane_logserver_tx
                     .send(LaneLogServerCommand::NewCar(lane_id.clone(), car.clone()))
                     .await
                     .unwrap();
+                // Update tip cut with this remote CAR (latest per-lane CAR)
+                self.update_tip_cut(lane_id.clone(), car.clone());
+                debug!(
+                    "[DAG LANE STAGING] tipcut_update_after_remote_car: lane={} n={}",
+                    lane_id, car.n
+                );
+
+                // Process any children now unblocked by this CAR
+                self.process_pending_children(lane_id, car.n).await?;
             }
         }
-
-        // Update tip cut with this remote CAR (latest per-lane CAR)
-        self.update_tip_cut(lane_id.clone(), car.clone());
-        debug!(
-            "[DAG LANE STAGING] tipcut_update_after_remote_car: lane={} n={}",
-            lane_id, car.n
-        );
-
-        // Process any children now unblocked by this CAR
-        self.process_pending_children(lane_id, car.n).await?;
 
         Ok(())
     }
@@ -1239,18 +1240,14 @@ impl LaneStaging {
             if n <= u {
                 return 1;
             }
-            // u + 1
-            // I count as 1
-            u
+            u + 1
         }
 
         #[cfg(not(feature = "platforms"))]
         {
             let n = self.config.get().consensus_config.node_list.len();
             let f = n / 3;
-            // f + 1
-            // I count as 1
-            f
+            f + 1
         }
     }
 

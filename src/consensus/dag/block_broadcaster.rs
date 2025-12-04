@@ -463,9 +463,10 @@ impl DagBlockBroadcaster {
         }
 
         let sz = data.len();
-        debug!(
+        trace!(
             "AppendBlocks batch size: {} Broadcasting to {:?}",
-            sz, names
+            sz,
+            names
         );
         let data = PinnedMessage::from(data, sz, SenderType::Anon);
         let mut profile = LatencyProfile::new();
