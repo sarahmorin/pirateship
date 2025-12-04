@@ -436,7 +436,6 @@ impl BlockSequencer {
             )),
         };
 
-        // FIXME: this is clunky fix it later
         #[cfg(feature = "dag")]
         let tipcut = ProtoTipCut {
             tips: tipcut.clone(),
@@ -561,6 +560,10 @@ impl BlockSequencer {
                 // Now the NEXT block (ie new_seq_num + 1) is going to be for NewView.
                 #[cfg(not(feature = "dag"))]
                 self.handle_new_batch(RawBatch::new(), vec![], fork_validation, 0)
+                    .await;
+
+                #[cfg(feature = "dag")]
+                self.handle_new_batch(RawTipCut::new(), fork_validation, 0)
                     .await;
             }
         }
