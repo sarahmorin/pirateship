@@ -14,7 +14,7 @@ use crate::rpc::server::LatencyProfile;
 use crate::rpc::{PinnedMessage, SenderType};
 use crate::utils::channel::{Receiver, Sender};
 use crate::utils::PerfCounter;
-use log::{debug, error, info, warn};
+use log::{debug, error, info, trace, warn};
 use prost::Message as _;
 use std::io::ErrorKind;
 use tokio::sync::{oneshot, Mutex};
@@ -226,11 +226,6 @@ impl BatchProposer {
         }
 
         if new_tx.is_some() {
-            // if !self.i_am_leader() {
-            //     self.reply_leader(new_tx.unwrap()).await;
-            //     return Ok(());
-            // }
-
             self.perf_register_random(work_counter);
 
             let new_tx = new_tx.unwrap();
@@ -266,18 +261,20 @@ impl BatchProposer {
     async fn propose_new_batch(&mut self) {
         self.last_batch_proposed = Instant::now();
         let batch = self.current_raw_batch.take().unwrap();
-        if batch.len() > 0 {
-            debug!(
-                "[DAG-DISSEMINATION] BatchProposer proposing batch with {} txs",
-                batch.len()
-            );
-        }
         self.current_raw_batch = Some(RawBatch::with_capacity(
             self.config.get().consensus_config.max_backlog_batch_size,
         ));
         let reply_chans = self.current_reply_vec.drain(..).collect();
-        let _ = self.dag_block_seq_tx.send((batch, reply_chans)).await;
-        self.perf_event_and_deregister_all("Propose batch");
+        if batch.len() == 0 {
+            trace!("[DAG-DISSEMINATION] BatchProposer skipping proposing empty batch");
+        } else {
+            debug!(
+                "[DAG-DISSEMINATION] BatchProposer proposing batch with {} txs",
+                batch.len()
+            );
+            let _ = self.dag_block_seq_tx.send((batch, reply_chans)).await;
+            self.perf_event_and_deregister_all("Propose batch");
+        }
         self.batch_timer.reset();
     }
 
