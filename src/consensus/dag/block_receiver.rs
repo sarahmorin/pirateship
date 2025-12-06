@@ -88,8 +88,23 @@ macro_rules! ask_lane_logserver {
     ($me:expr, $query:expr, $($args:expr),+) => {
         {
             let (tx, rx) = make_channel(1);
-            $me.lane_logserver_query_tx.send($query($($args),+, tx)).await.unwrap();
-            rx.recv().await.unwrap()
+            if let Err(e) = $me.lane_logserver_query_tx.send($query($($args),+, tx)).await {
+                warn!("LaneLogServer query send failed: {:?}", e);
+                // Return a conservative default
+                // For CheckHash -> false, for GetHints -> empty hints; callers should handle accordingly
+            }
+            match rx.recv().await {
+                Some(val) => val,
+                None => {
+                    warn!("LaneLogServer query channel closed while awaiting response");
+                    // Provide safe defaults based on expected types via trait bounds is not feasible in macro;
+                    // Callers handle an empty/false-like value by re-validating or NACKing.
+                    // For bool-returning queries, default false; for struct returns, construct empty.
+                    // We emulate false by using a block that returns false when expected type is bool.
+                    // For non-bool, callers should avoid assuming unwrap.
+                    Default::default()
+                }
+            }
         }
     };
 }
@@ -179,8 +194,8 @@ impl BlockReceiver {
             block_sender = self.block_rx.recv() => {
                 if let Some((blocks, sender_type)) = block_sender {
                     if let SenderType::Auth(sender, _) = sender_type {
-                        debug!("Received AppendBlocks(n={}) from {}",
-                            blocks.serialized_blocks.last().unwrap().n, sender);
+                        let last_n = blocks.serialized_blocks.last().map(|b| b.n).unwrap_or(0);
+                        debug!("Received AppendBlocks(n={}) from {}", last_n, sender);
                         self.process_blocks(blocks, sender).await;
                     } else {
                         warn!("BlockReceiver received non-authenticated sender type; dropping AppendBlocks");
@@ -264,7 +279,13 @@ impl BlockReceiver {
             multipart_lane.lane_future.len(),
             lane_id
         );
-        self.dag_broadcaster_tx.send(multipart_lane).await.unwrap();
+        if let Err(e) = self.dag_broadcaster_tx.send(multipart_lane).await {
+            warn!(
+                "Failed to forward MultiPartLane to broadcaster for lane {}: {:?}",
+                lane_id, e
+            );
+            return; // avoid updating continuity on failure
+        }
 
         // Update lane continuity with the hash of the last block in this lane
         if let Some(last_hash_rx) = hash_receivers.pop() {

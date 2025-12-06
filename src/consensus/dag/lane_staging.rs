@@ -187,34 +187,39 @@ impl LaneStaging {
         tokio::select! {
             // biased;
             block = self.block_rx.recv() => {
-                if block.is_none() {
+                if let Some((block, storage_ack, stats, _this_is_final_block)) = block {
+                    self.process_block(block, storage_ack, stats).await?;
+                } else {
+                    warn!("[DAG LANE STAGING] block_rx channel closed");
                     return Err(());
                 }
-                let (block, storage_ack, stats, _this_is_final_block) = block.unwrap();
-                self.process_block(block, storage_ack, stats).await?;
             },
 
             block_ack = self.block_ack_rx.recv() => {
-                if block_ack.is_none() {
+                if let Some((block_ack, sender)) = block_ack {
+                    self.process_block_ack(block_ack, sender).await?;
+                } else {
+                    warn!("[DAG LANE STAGING] block_ack_rx channel closed");
                     return Err(());
                 }
-                let (block_ack, sender) = block_ack.unwrap();
-                self.process_block_ack(block_ack, sender).await?;
             },
 
             car = self.car_rx.recv() => {
-                if car.is_none() {
+                if let Some((car, sender)) = car {
+                    self.process_remote_car(car, sender).await?;
+                } else {
+                    warn!("[DAG LANE STAGING] car_rx channel closed");
                     return Err(());
                 }
-                let (car, sender) = car.unwrap();
-                self.process_remote_car(car, sender).await?;
             },
 
             query = self.query_rx.recv() => {
-                if query.is_none() {
+                if let Some(query) = query {
+                    self.handle_query(query);
+                } else {
+                    warn!("[DAG LANE STAGING] query_rx channel closed");
                     return Err(());
                 }
-                self.handle_query(query.unwrap());
             },
         }
 
@@ -280,13 +285,19 @@ impl LaneStaging {
                 );
 
                 // Forward to LaneLogServer for persistence and querying
-                self.lane_logserver_tx
+                if let Err(e) = self
+                    .lane_logserver_tx
                     .send(LaneLogServerCommand::NewBlock(
                         lane_id.clone(),
                         block.clone(),
                     ))
                     .await
-                    .unwrap();
+                {
+                    warn!(
+                        "[DAG LANE STAGING] lane_logserver_send_fail: lane={} n={} err={:?}",
+                        lane_id, seq_num, e
+                    );
+                }
 
                 // Send acknowledgment to other nodes
                 self.send_block_ack(&block, &lane_id).await?;
@@ -428,12 +439,21 @@ impl LaneStaging {
             block_ack.digest.len(),
             block_ack.sig.len()
         );
-        let verified = self
+        let verified = match self
             .crypto
             .verify_nonblocking(digest_hash, sender_name.clone(), sig)
             .await
             .await
-            .unwrap();
+        {
+            Ok(v) => v,
+            Err(e) => {
+                warn!(
+                    "[DAG LANE STAGING] ack_verify_error: from={} lane={} n={} err={:?}",
+                    sender_name, lane_id, block_ack.n, e
+                );
+                false
+            }
+        };
 
         if !verified {
             warn!(
@@ -461,11 +481,18 @@ impl LaneStaging {
             }
         };
         if !lane_has_block {
-            warn!(
-                "[DAG LANE STAGING] Received ack for unknown lane/block: lane={} n={} from={}",
-                lane_id, block_ack.n, sender_name
-            );
-            return Ok(());
+            // Try to load the block into memory (it may have been persisted but not yet in staging's map)
+            if self
+                .ensure_block_in_memory(&lane_id, block_ack.n)
+                .await
+                .is_none()
+            {
+                warn!(
+                    "[DAG LANE STAGING] Received ack for unknown lane/block: lane={} n={} from={}",
+                    lane_id, block_ack.n, sender_name
+                );
+                return Ok(());
+            }
         }
         let expected_digest: Vec<u8> = expected_digest_opt.unwrap().try_into().unwrap_or_default();
         if expected_digest != block_ack.digest {
@@ -612,10 +639,16 @@ impl LaneStaging {
             }
         } // drop mutable borrow before awaits
 
-        self.lane_logserver_tx
+        if let Err(e) = self
+            .lane_logserver_tx
             .send(LaneLogServerCommand::NewCar(lane_id.clone(), car.clone()))
             .await
-            .unwrap();
+        {
+            warn!(
+                "[DAG LANE STAGING] lane_logserver_send_fail_car: lane={} n={} err={:?}",
+                lane_id, seq_num, e
+            );
+        }
 
         // Broadcast the CAR to all nodes
         self.broadcast_car(car.clone()).await?;
@@ -802,12 +835,22 @@ impl LaneStaging {
             };
 
             // Verify signature against CAR digest
-            let verified = self
-                .crypto
-                .verify_nonblocking(digest_hash.clone(), signed.name.clone(), sig_bytes)
-                .await
-                .await
-                .unwrap_or(false);
+            let verified =
+                match self
+                    .crypto
+                    .verify_nonblocking(digest_hash.clone(), signed.name.clone(), sig_bytes)
+                    .await
+                    .await
+                {
+                    Ok(v) => v,
+                    Err(e) => {
+                        trace!(
+                        "[DAG LANE STAGING] car_sig_verify_error: signer={} lane={} n={} err={:?}",
+                        signed.name, lane_id, car.n, e
+                    );
+                        false
+                    }
+                };
 
             if verified {
                 unique_valid_signers.insert(signed.name.clone());
@@ -927,7 +970,8 @@ impl LaneStaging {
                 // Step 3: check with logserver
                 use crate::utils::channel::make_channel;
                 let (tx, rx) = make_channel(1);
-                self.lane_logserver_query_tx
+                if let Err(e) = self
+                    .lane_logserver_query_tx
                     .send(LaneLogServerQuery::CheckCar(
                         lane_id.clone(),
                         car.n - 1,
@@ -935,32 +979,46 @@ impl LaneStaging {
                         tx,
                     ))
                     .await
-                    .unwrap();
-                match rx.recv().await.unwrap() {
-                    CheckCarResult::Success => {
-                        // ok, continue to attach child
-                        debug!(
+                {
+                    warn!(
+                        "[DAG LANE STAGING] lane_logserver_query_send_fail CheckCar: lane={} parent_n={} err={:?}",
+                        lane_id, car.n - 1, e
+                    );
+                }
+                match rx.recv().await {
+                    Some(result) => match result {
+                        CheckCarResult::Success => {
+                            // ok, continue to attach child
+                            debug!(
                             "[DAG LANE STAGING] remote_car_parent_ok: lane={} child_n={} parent_n={}",
                             lane_id,
                             car.n,
                             car.n - 1
                         );
-                    }
-                    CheckCarResult::Failure => {
-                        warn!(
+                        }
+                        CheckCarResult::Failure => {
+                            warn!(
                             "Rejecting CAR lane {} n {}: parent CAR exists with different digest",
                             lane_id, car.n
                         );
-                        return Ok(());
-                    }
-                    CheckCarResult::NotExists => {
-                        // queue pending until parent arrives
-                        self.add_pending_child(lane_id, car.n - 1, car.clone());
-                        trace!(
-                            "Queued CAR lane {} n {} pending parent n {} (not exists)",
-                            lane_id,
-                            car.n,
-                            car.n - 1
+                            return Ok(());
+                        }
+                        CheckCarResult::NotExists => {
+                            // queue pending until parent arrives
+                            self.add_pending_child(lane_id, car.n - 1, car.clone());
+                            trace!(
+                                "Queued CAR lane {} n {} pending parent n {} (not exists)",
+                                lane_id,
+                                car.n,
+                                car.n - 1
+                            );
+                            return Ok(());
+                        }
+                    },
+                    None => {
+                        warn!(
+                            "[DAG LANE STAGING] lane_logserver_query_rx_closed CheckCar: lane={} parent_n={}",
+                            lane_id, car.n - 1
                         );
                         return Ok(());
                     }
@@ -1116,7 +1174,8 @@ impl LaneStaging {
         {
             use crate::utils::channel::make_channel;
             let (tx, rx) = make_channel(1);
-            self.lane_logserver_query_tx
+            if let Err(e) = self
+                .lane_logserver_query_tx
                 .send(LaneLogServerQuery::CheckCar(
                     lane_id.clone(),
                     car.n,
@@ -1124,12 +1183,29 @@ impl LaneStaging {
                     tx,
                 ))
                 .await
-                .unwrap();
-            if matches!(rx.recv().await.unwrap(), CheckCarResult::NotExists) {
-                self.lane_logserver_tx
+            {
+                warn!(
+                    "[DAG LANE STAGING] lane_logserver_query_send_fail CheckCar(child): lane={} n={} err={:?}",
+                    lane_id, car.n, e
+                );
+            }
+            match rx.recv().await {
+                Some(result) if matches!(result, CheckCarResult::NotExists) => {
+                    self.lane_logserver_tx
                     .send(LaneLogServerCommand::NewCar(lane_id.clone(), car.clone()))
                     .await
-                    .unwrap();
+                        .unwrap_or_else(|e| warn!(
+                            "[DAG LANE STAGING] lane_logserver_send_fail NewCar(child): lane={} n={} err={:?}",
+                            lane_id, car.n, e
+                        ));
+                }
+                Some(_) => {}
+                None => {
+                    warn!(
+                        "[DAG LANE STAGING] lane_logserver_query_rx_closed CheckCar(child): lane={} n={}",
+                        lane_id, car.n
+                    );
+                }
             }
         }
 

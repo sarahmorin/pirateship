@@ -258,8 +258,18 @@ impl DagBlockBroadcaster {
             DagBlockBroadcasterCommand::UpdateCI(ci) => self.ci = ci,
             DagBlockBroadcasterCommand::NextAppendBlocksPrefix(blocks) => {
                 for block_rx in blocks {
-                    let block = block_rx.await.unwrap().expect("Failed to get block");
-                    self.lane_prefix_buffer.push(block);
+                    match block_rx.await {
+                        Ok(Ok(block)) => self.lane_prefix_buffer.push(block),
+                        Ok(Err(e)) => {
+                            warn!("[DAG-DISSEMINATION] Prefix block verify failed: {:?}", e);
+                        }
+                        Err(e) => {
+                            warn!(
+                                "[DAG-DISSEMINATION] Failed to receive prefix block future: {:?}",
+                                e
+                            );
+                        }
+                    }
                 }
             }
         }
@@ -282,10 +292,17 @@ impl DagBlockBroadcaster {
         // Forward to staging (which is actually LaneStaging in DAG mode)
         self.perf_add_event(perf_entry, "Forward block to logserver");
 
-        self.lane_staging_tx
+        if let Err(e) = self
+            .lane_staging_tx
             .send((block.clone(), storage_ack, block_stats, this_is_final_block))
             .await
-            .unwrap();
+        {
+            warn!(
+                "[DAG-DISSEMINATION] Failed to send block to LaneStaging: n={} err={:?}",
+                block.block.n, e
+            );
+            // Keep running; staging might be restarting. Do not panic.
+        }
 
         self.perf_add_event(perf_entry, "Forward block to staging");
 
@@ -341,7 +358,8 @@ impl DagBlockBroadcaster {
         }
 
         // Notify app for stats
-        self.app_command_tx
+        if let Err(e) = self
+            .app_command_tx
             .send(AppCommand::NewRequestBatch(
                 block.block.n,
                 view,
@@ -351,7 +369,12 @@ impl DagBlockBroadcaster {
                 block.block_hash.clone(),
             ))
             .await
-            .unwrap();
+        {
+            warn!(
+                "[DAG-DISSEMINATION] Failed to send app stats for block {}: err={:?}",
+                block.block.n, e
+            );
+        }
 
         // Broadcast batched blocks to all other nodes in a single AppendBlocks message
         let names = self.get_everyone_except_me();
@@ -400,7 +423,8 @@ impl DagBlockBroadcaster {
                 .await?;
 
             // Forward to app for stats
-            self.app_command_tx
+            if let Err(e) = self
+                .app_command_tx
                 .send(AppCommand::NewRequestBatch(
                     blk.block.n,
                     lane.ab_stats.view,
@@ -410,7 +434,12 @@ impl DagBlockBroadcaster {
                     blk.block_hash.clone(),
                 ))
                 .await
-                .unwrap();
+            {
+                warn!(
+                    "[DAG-DISSEMINATION] Failed to send app stats for other-lane block {}: err={:?}",
+                    blk.block.n, e
+                );
+            }
         }
 
         Ok(())
