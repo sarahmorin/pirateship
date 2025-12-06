@@ -155,12 +155,10 @@ impl Staging {
         let n = btc.n();
         if self.pending_votes.len() == 0 {
             if self.curr_parent_for_pending.is_none() {
-                warn!("No current parent for pending blocks, n==1");
                 return n == 1;
             } else {
                 let parent = btc.parent();
 
-                warn!("Checking parent for pending blocks");
                 return parent.eq(&self.curr_parent_for_pending.as_ref().unwrap().digest())
                     && n == self.curr_parent_for_pending.as_ref().unwrap().n() + 1;
             }
