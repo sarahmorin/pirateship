@@ -1,3 +1,4 @@
+use std::collections::HashMap;
 use std::time::Duration;
 /// Tip Cut Proposal Module for DAG Consensus
 ///
@@ -20,12 +21,9 @@ use std::{cmp, sync::Arc};
 use log::{debug, error, info, trace, warn};
 use tokio::sync::{oneshot, Mutex};
 
-use crate::consensus::batch_proposal::MsgAckChanWithTag;
-use crate::rpc::server::MsgAckChan;
 use crate::{
     config::AtomicConfig,
-    crypto::HashType,
-    proto::consensus::{DefferedSignature, ProtoBlockCar, ProtoTipCut, ProtoTipCutValidation},
+    proto::consensus::ProtoBlockCar,
     utils::{
         channel::{Receiver, Sender},
         timer::ResettableTimer,
@@ -62,7 +60,7 @@ pub struct TipCutProposal {
 
     // Leadership state
     i_am_leader: bool,
-    current_leader: String,
+    // current_leader: String, // unused; leader derived from config per view
 
     // Timer for periodic proposals
     tip_cut_timer: Arc<std::pin::Pin<Box<ResettableTimer>>>,
@@ -78,6 +76,10 @@ pub struct TipCutProposal {
 
     // Command channel for view changes and leadership updates
     cmd_rx: Receiver<TipCutProposalCommand>,
+
+    // Per-lane watermark of last proposed CAR sequence number.
+    // Ensures a given CAR for a lane is only included in one tip cut on this node.
+    last_proposed_per_lane: HashMap<String, u64>,
 }
 
 impl TipCutProposal {
@@ -122,12 +124,13 @@ impl TipCutProposal {
             view_is_stable,
             config_num,
             i_am_leader,
-            current_leader,
+            // current_leader,
             tip_cut_timer,
             tip_cut_max_cars,
             lane_staging_query_tx,
             consensus_sequencer_tx,
             cmd_rx,
+            last_proposed_per_lane: HashMap::new(),
         }
     }
 
@@ -243,30 +246,83 @@ impl TipCutProposal {
             Some(tc) => tc,
             None => {
                 debug!("No CARs available yet for tip cut proposal");
+                // On timer ticks, still send an empty tip cut as heartbeat; on threshold path, skip.
+                if use_threshold {
+                    return Ok(());
+                }
+                self.send_tip_cut(vec![]).await?;
+                // Do not update watermark (no cars)
+                // Reset timer to mimic batch proposer heartbeat behavior
+                self.tip_cut_timer.reset();
                 return Ok(());
             }
         };
 
-        // If using threshold-based proposal, check if enough CARs are present
-        if use_threshold && tip_cut.cars.len() < self.tip_cut_max_cars {
-            info!(
-                "Not enough CARs for tip cut proposal without timer tick: have {}, need {}",
-                tip_cut.cars.len(),
-                self.tip_cut_max_cars
-            );
+        // Filter CARs per lane using watermark (only propose cars with n > last_proposed)
+        let mut filtered: Vec<ProtoBlockCar> = Vec::new();
+        for (lane_id, car) in tip_cut.cars.into_iter() {
+            let last = self
+                .last_proposed_per_lane
+                .get(&lane_id)
+                .copied()
+                .unwrap_or(0);
+            if car.n > last {
+                filtered.push(car);
+            } else {
+                trace!(
+                    "Skipping already proposed CAR: lane={} car_n={} last_proposed_n={}",
+                    lane_id,
+                    last,
+                    last
+                );
+            }
+        }
+
+        // Threshold path: only propose if enough new cars
+        // The timer has not ticked, so we only propose if we have enough new cars
+        if use_threshold {
+            let have = filtered.len();
+            let need = self.tip_cut_max_cars;
+            if need > 0 && have < need {
+                info!(
+                    "Not enough NEW CARs for threshold tip cut: have {} need {} (after watermark)",
+                    have, need
+                );
+                return Ok(());
+            }
+        }
+
+        // Timer path: allow empty heartbeat tip cuts
+        if !use_threshold && filtered.is_empty() {
+            debug!("Timer tick with no new CARs — sending empty tip cut heartbeat");
+            self.send_tip_cut(vec![]).await?;
+            self.tip_cut_timer.reset();
             return Ok(());
         }
 
         info!(
-            "Proposing tip cut with {} CARs for view {} (ci={})",
-            tip_cut.cars.len(),
+            "Proposing tip cut with {} NEW CARs for view {} (ci={})",
+            filtered.len(),
             self.view,
             self.ci
         );
 
-        // Collect CARs into a vec
-        let cars: Vec<_> = tip_cut.cars.into_values().collect();
+        // Send filtered cars to BlockSequencer
+        self.send_tip_cut(filtered.clone()).await?;
 
+        // Update per-lane watermark for the cars we just proposed
+        for car in filtered.into_iter() {
+            self.last_proposed_per_lane
+                .insert(car.origin_node.clone(), car.n);
+        }
+
+        // Reset timer (batch proposer behavior)
+        self.tip_cut_timer.reset();
+        Ok(())
+    }
+
+    /// Helper to send the tip cut cars to the sequencer.
+    async fn send_tip_cut(&mut self, cars: Vec<ProtoBlockCar>) -> Result<(), ()> {
         // Send to BlockSequencer which will:
         // 1. Compute digest and parent
         // 2. Send to BlockBroadcaster
@@ -274,7 +330,6 @@ impl TipCutProposal {
         self.consensus_sequencer_tx.send(cars).await.map_err(|e| {
             error!("Failed to send tip cut to BlockSequencer: {:?}", e);
         })?;
-
         info!("Sent tip cut to BlockSequencer for sequencing and broadcasting");
         Ok(())
     }
