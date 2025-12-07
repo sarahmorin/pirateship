@@ -710,6 +710,8 @@ impl<E: AppEngine + Send + Sync> ConsensusNode<E> {
 
         // DAG Lane Staging
         #[cfg(feature = "dag")]
+        let (lane_cache_tx, lane_cache_rx) = crate::utils::channel::make_channel(1024);
+        #[cfg(feature = "dag")]
         let lane_staging = dag::lane_staging::LaneStaging::new(
             config.clone(),
             lane_staging_client.into(),
@@ -721,6 +723,7 @@ impl<E: AppEngine + Send + Sync> ConsensusNode<E> {
             client_reply_command_tx.clone(),
             lane_logserver_tx,
             lane_logserver_query_tx.clone(),
+            lane_cache_tx,
         );
 
         // DAG Lane LogServer
@@ -808,6 +811,8 @@ impl<E: AppEngine + Send + Sync> ConsensusNode<E> {
             dag_block_sequencer_command_tx,
             #[cfg(feature = "dag")]
             dag_block_broadcaster_command_tx,
+            #[cfg(feature = "dag")]
+            lane_cache_rx,
             #[cfg(feature = "extra_2pc")]
             extra_2pc_command_tx,
             #[cfg(feature = "extra_2pc")]

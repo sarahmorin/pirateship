@@ -346,11 +346,19 @@ impl LaneLogServer {
         let mut ret = starting_point;
         while ret.block.n > n {
             let parent_hash = &ret.block.parent;
-            let block = self
-                .storage
-                .get_block(parent_hash)
-                .await
-                .expect("Failed to get block from storage");
+            let block = match self.storage.get_block(parent_hash).await {
+                Ok(cb) => cb,
+                Err(e) => {
+                    warn!(
+                        "[DAG LANE LOGSERVER] storage_get_block_fail: lane={} target_n={} at_parent_n={} err={:?}",
+                        lane_id,
+                        n,
+                        ret.block.n,
+                        e
+                    );
+                    return None;
+                }
+            };
 
             // Update cache for this lane
             if let Some(cache) = self.read_caches.get_mut(lane_id) {
@@ -692,6 +700,23 @@ impl LaneLogServer {
             );
             return;
         }
+
+        // Persist block to storage by hash to support GC fetches and backfill
+        let persist_rx = self.storage.put_block(&block).await;
+        // Fire-and-forget; optional: await and log result
+        tokio::spawn(async move {
+            match persist_rx.await {
+                Ok(Ok(())) => {
+                    // ok
+                }
+                Ok(Err(e)) => {
+                    warn!("[DAG LANE LOGSERVER] persist_block_fail: err={:?}", e);
+                }
+                Err(_) => {
+                    warn!("[DAG LANE LOGSERVER] persist_block_ack_channel_closed");
+                }
+            }
+        });
 
         lane.push_back(block);
     }

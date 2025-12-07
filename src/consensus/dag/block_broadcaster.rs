@@ -292,6 +292,7 @@ impl DagBlockBroadcaster {
         // Forward to staging (which is actually LaneStaging in DAG mode)
         self.perf_add_event(perf_entry, "Forward block to logserver");
 
+        let lane_id_for_log = block_stats.lane_id.clone();
         if let Err(e) = self
             .lane_staging_tx
             .send((block.clone(), storage_ack, block_stats, this_is_final_block))
@@ -302,6 +303,14 @@ impl DagBlockBroadcaster {
                 block.block.n, e
             );
             // Keep running; staging might be restarting. Do not panic.
+        } else {
+            debug!(
+                "[DAG-DISSEMINATION] Sent block to LaneStaging: n={} hash={} lane={} final={}",
+                block.block.n,
+                hex::encode(&block.block_hash),
+                lane_id_for_log,
+                this_is_final_block
+            );
         }
 
         self.perf_add_event(perf_entry, "Forward block to staging");

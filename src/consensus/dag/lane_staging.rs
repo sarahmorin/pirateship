@@ -124,6 +124,8 @@ pub struct LaneStaging {
     client_reply_tx: Sender<ClientReplyCommand>,
     lane_logserver_tx: Sender<LaneLogServerCommand>,
     lane_logserver_query_tx: Sender<LaneLogServerQuery>,
+    // Send per-lane cache updates to Staging to avoid runtime queries
+    lane_cache_tx: Sender<(String /* lane_id */, CachedBlock)>,
 
     // Child CARs awaiting their parent CAR (keyed by (lane_id, parent_n))
     pending_children_by_parent: HashMap<(String, u64), Vec<ProtoBlockCar>>,
@@ -146,6 +148,7 @@ impl LaneStaging {
         client_reply_tx: Sender<ClientReplyCommand>,
         lane_logserver_tx: Sender<LaneLogServerCommand>,
         lane_logserver_query_tx: Sender<LaneLogServerQuery>,
+        lane_cache_tx: Sender<(String, CachedBlock)>,
     ) -> Self {
         Self {
             config,
@@ -167,6 +170,7 @@ impl LaneStaging {
             client_reply_tx,
             lane_logserver_tx,
             lane_logserver_query_tx,
+            lane_cache_tx,
             pending_children_by_parent: HashMap::new(),
         }
     }
@@ -296,6 +300,25 @@ impl LaneStaging {
                     warn!(
                         "[DAG LANE STAGING] lane_logserver_send_fail: lane={} n={} err={:?}",
                         lane_id, seq_num, e
+                    );
+                }
+
+                // Send cache update to Staging for commit-time sorting
+                if let Err(e) = self
+                    .lane_cache_tx
+                    .send((lane_id.clone(), block.clone()))
+                    .await
+                {
+                    warn!(
+                        "[DAG LANE STAGING] lane_cache_send_fail: lane={} n={} err={:?}",
+                        lane_id, seq_num, e
+                    );
+                } else {
+                    debug!(
+                        "[DAG LANE STAGING] lane_cache_send_ok: lane={} n={} hash={}",
+                        lane_id,
+                        seq_num,
+                        hex::encode(&block.block_hash)
                     );
                 }
 

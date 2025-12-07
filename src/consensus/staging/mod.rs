@@ -178,6 +178,16 @@ pub struct Staging {
     dag_block_sequencer_command_tx: Sender<DagBlockSequencerCommand>,
     #[cfg(feature = "dag")]
     dag_block_broadcaster_command_tx: Sender<DagBlockBroadcasterCommand>,
+
+    // DAG-only: per-lane in-memory block cache to avoid runtime lane logserver queries
+    #[cfg(feature = "dag")]
+    per_lane_block_cache: HashMap<String, HashMap<u64, CachedBlock>>,
+    // DAG-only: last committed seq per lane (watermark)
+    #[cfg(feature = "dag")]
+    last_committed_lane_seq: HashMap<String, u64>,
+    // DAG-only: receive cache updates for lane blocks directly from LaneStaging/BlockBroadcaster
+    #[cfg(feature = "dag")]
+    lane_cache_rx: Receiver<(String /* lane_id */, CachedBlock)>,
 }
 
 impl Staging {
@@ -203,6 +213,7 @@ impl Staging {
         #[cfg(feature = "dag")] dag_block_broadcaster_command_tx: Sender<
             DagBlockBroadcasterCommand,
         >,
+        #[cfg(feature = "dag")] lane_cache_rx: Receiver<(String, CachedBlock)>,
 
         #[cfg(feature = "extra_2pc")] two_pc_command_tx: Sender<TwoPCCommand>,
 
@@ -274,6 +285,12 @@ impl Staging {
             __ae_seen_in_this_view: 0,
             #[cfg(feature = "dag")]
             last_lane_seq: HashMap::new(),
+            #[cfg(feature = "dag")]
+            per_lane_block_cache: HashMap::new(),
+            #[cfg(feature = "dag")]
+            last_committed_lane_seq: HashMap::new(),
+            #[cfg(feature = "dag")]
+            lane_cache_rx,
 
             #[cfg(feature = "extra_2pc")]
             two_pc_command_tx,
@@ -323,6 +340,20 @@ impl Staging {
         tokio::select! {
             _tick = self.view_change_timer.wait() => {
                 self.handle_view_change_timer_tick().await?;
+            },
+            // DAG: process one lane cache event per iteration
+            // #[cfg(feature = "dag")]
+            lane_cache = self.lane_cache_rx.recv() => {
+                match lane_cache {
+                    Some((lane_id, block)) => {
+                        warn!("[DAG STAGING] lane_cache_event: lane={} n={} txs={}", lane_id, block.block.n, block.block.tx_list.len());
+                        self.cache_insert_block(&lane_id, &block);
+                    }
+                    None => {
+                        warn!("[DAG STAGING] lane_cache_channel_closed");
+                        return Err(())
+                    }
+                }
             },
             msg = self.block_rx.recv() => {
                 if msg.is_none() {
@@ -382,6 +413,20 @@ impl Staging {
             _tick = self.view_change_timer.wait() => {
                 self.handle_view_change_timer_tick().await?;
             },
+            // DAG: process one lane cache event per iteration
+            // #[cfg(feature = "dag")]
+            lane_cache = self.lane_cache_rx.recv() => {
+                match lane_cache {
+                    Some((lane_id, block)) => {
+                        warn!("[DAG STAGING] lane_cache_event: lane={} n={} txs={}", lane_id, block.block.n, block.block.tx_list.len());
+                        self.cache_insert_block(&lane_id, &block);
+                    }
+                    None => {
+                        warn!("[DAG STAGING] lane_cache_channel_closed");
+                        return Err(())
+                    }
+                }
+            },
             msg = self.block_rx.recv() => {
                 if msg.is_none() {
                     return Err(())
@@ -414,6 +459,8 @@ impl Staging {
                 } else {
                     warn!("Received vote while being a follower");
                 }
+                // #[cfg(feature = "dag")]
+                // self.handle_lane_cache_updates().await;
             },
             cmd = self.pacemaker_rx.recv() => {
                 if cmd.is_none() {
@@ -427,6 +474,38 @@ impl Staging {
         Ok(())
     }
 
+    // --------------- DAG-only helpers for Phase 1 -----------------
+    #[cfg(feature = "dag")]
+    fn cache_insert_block(&mut self, lane_id: &str, block: &CachedBlock) {
+        let entry = self
+            .per_lane_block_cache
+            .entry(lane_id.to_string())
+            .or_insert_with(HashMap::new);
+        let prev = entry.insert(block.block.n, block.clone());
+        if prev.is_some() {
+            warn!(
+                "[DAG STAGING] cache_overwrite: lane={} n={}",
+                lane_id, block.block.n
+            );
+        } else {
+            warn!(
+                "[DAG STAGING] cache_insert: lane={} n={} hash_len={}",
+                lane_id,
+                block.block.n,
+                block.block_hash.len()
+            );
+        }
+    }
+
+    #[cfg(feature = "dag")]
+    fn cache_get_block(&self, lane_id: &str, n: u64) -> Option<CachedBlock> {
+        self.per_lane_block_cache
+            .get(lane_id)
+            .and_then(|m| m.get(&n).cloned())
+    }
+
+    // lane cache updates are handled as events in worker's select
+
     /// DAG-only: Build inputs and call the sorter for a committed tip cut.
     /// Returns sorted blocks and origin map. Does not execute or update commit indices.
     #[cfg(feature = "dag")]
@@ -434,6 +513,11 @@ impl Staging {
         &mut self,
         tipcut: &ProtoTipCut,
     ) -> Result<(Vec<CachedBlock>, HashMap<HashType, String>), TipCutSortError> {
+        debug!(
+            "[DAG STAGING] sort_tipcut: n={} tips={}",
+            tipcut.n,
+            tipcut.tips.len()
+        );
         // Build cars map keyed by origin_node (serves as lane_id)
         let mut cars: HashMap<String, ProtoBlockCar> = HashMap::new();
         for car in &tipcut.tips {
@@ -441,18 +525,21 @@ impl Staging {
         }
 
         let last_lane_seq = &self.last_lane_seq;
-        let query_tx = self.lane_logserver_query_tx.clone();
+        let cache = self.per_lane_block_cache.clone();
 
-        // Fetch function to retrieve a block from a lane by sequence number
+        // Fetch function retrieves from cache only; lane staging will backfill and populate cache
         let fetch = move |lane: &str, seq: u64| {
-            let query_tx = query_tx.clone();
-            let lane = lane.to_string();
+            let lane_id = lane.to_string();
+            let cache = cache.clone();
             async move {
-                let (tx, rx) = make_channel(1);
-                let _ = query_tx
-                    .send(LaneLogServerQuery::GetBlock(lane.clone(), seq, tx))
-                    .await;
-                rx.recv().await.flatten()
+                if let Some(map) = cache.get(&lane_id) {
+                    if let Some(block) = map.get(&seq) {
+                        warn!("[DAG STAGING] cache_hit: lane={} n={}", lane_id, seq);
+                        return Some(block.clone());
+                    }
+                }
+                warn!("[DAG STAGING] cache_miss: lane={} n={}", lane_id, seq);
+                None
             }
         };
 
