@@ -351,6 +351,26 @@ impl BlockBroadcaster {
                 .unwrap();
         }
 
+        // Forward to app for stats.
+        #[cfg(feature = "dag")]
+        {
+            let tipcut = match entry {
+                BlockOrTipCut::TipCut(t) => t,
+                _ => unreachable!(),
+            };
+            self.app_command_tx
+                .send(AppCommand::NewTipCut(
+                    tipcut.tipcut.n,
+                    view,
+                    view_is_stable,
+                    true,
+                    tipcut.tipcut.tips.len(),
+                    tipcut.tipcut_hash.clone(),
+                ))
+                .await
+                .unwrap();
+        }
+
         // Forward to other nodes. Involves copies and serialization so done last.
         let names = self.get_everyone_except_me();
 
@@ -436,7 +456,7 @@ impl BlockBroadcaster {
                 .await?;
 
             // Forward to app for stats.
-            // NOTE: In Dag mode, TipCuts are not forwarded to app command. Batch stats are handled by dag/block_broadcaster.
+            // NOTE: In DAG, request batch stats are forwarded by dag/block_broadcaster.rs
             #[cfg(not(feature = "dag"))]
             {
                 let block = match entry {
@@ -451,6 +471,26 @@ impl BlockBroadcaster {
                         false,
                         block.block.tx_list.len(),
                         block.block_hash.clone(),
+                    ))
+                    .await
+                    .unwrap();
+            }
+
+            // Forward to app for stats.
+            #[cfg(feature = "dag")]
+            {
+                let tipcut = match entry {
+                    BlockOrTipCut::TipCut(t) => t,
+                    _ => unreachable!(),
+                };
+                self.app_command_tx
+                    .send(AppCommand::NewTipCut(
+                        tipcut.tipcut.n,
+                        view,
+                        view_is_stable,
+                        false,
+                        tipcut.tipcut.tips.len(),
+                        tipcut.tipcut_hash.clone(),
                     ))
                     .await
                     .unwrap();

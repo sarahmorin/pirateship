@@ -589,7 +589,7 @@ impl Staging {
         &mut self,
         old_ci: u64,
         new_ci: u64,
-    ) -> (Vec<CachedBlock>, HashMap<HashType, String>, usize) {
+    ) -> (Vec<CachedBlock>, HashMap<HashType, String>) {
         let mut blocks: Vec<CachedBlock> = Vec::new();
         let mut origins: HashMap<HashType, String> = HashMap::new();
         let mut retrieved_batches = 0;
@@ -631,7 +631,7 @@ impl Staging {
             }
         }
 
-        (blocks, origins, retrieved_batches)
+        (blocks, origins)
     }
 
     /// DAG-only: Garbage collect exec batches up to but excluding ci

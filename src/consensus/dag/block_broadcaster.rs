@@ -376,6 +376,7 @@ impl DagBlockBroadcaster {
                 self.i_am_leader(view),
                 block.block.tx_list.len(),
                 block.block_hash.clone(),
+                true, /* is my lane */
             ))
             .await
         {
@@ -441,6 +442,7 @@ impl DagBlockBroadcaster {
                     self.i_am_leader(lane.ab_stats.view),
                     blk.block.tx_list.len(),
                     blk.block_hash.clone(),
+                    false,
                 ))
                 .await
             {

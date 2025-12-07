@@ -32,19 +32,31 @@ use super::{super::utils::timer::ResettableTimer, client_reply::ClientReplyComma
 
 pub enum AppCommand {
     NewRequestBatch(
-        u64,      /* block.n */
-        u64,      /* view */
-        bool,     /* view_is_stable */
-        bool,     /* i_am_leader */
-        usize,    /* length of new batch of request */
-        HashType, /* hash of the last block */
+        u64,                          /* block.n */
+        u64,                          /* view */
+        bool,                         /* view_is_stable */
+        bool,                         /* i_am_leader */
+        usize,                        /* length of new batch of request */
+        HashType,                     /* hash of the last block */
+        #[cfg(feature = "dag")] bool, /* is my lane */
+    ),
+    #[cfg(feature = "dag")]
+    NewTipCut(
+        u64,      /* tipcut.n */
+        u64,      /* tipcut.view */
+        bool,     /* tipcut.view_is_stable */
+        bool,     /* tipcut.i_am_leader */
+        usize,    /* number of CARs in the tipcut */
+        HashType, /* hash of the last tipcut */
     ),
     CrashCommit(
         Vec<CachedBlock>, /* all blocks from old_ci + 1 to new_ci */
     ),
     #[cfg(feature = "dag")]
     CrashCommitWithOrigins(
-        Vec<CachedBlock>, /* all blocks from old_ci + 1 to new_ci */
+        u64,                                         /* new ci */
+        u64,                                         /* new last_qc */
+        Vec<CachedBlock>,                            /* all blocks from old_ci + 1 to new_ci */
         std::collections::HashMap<HashType, String>, /* block_hash -> origin_node map for proxy pattern */
     ),
     ByzCommit(
@@ -52,7 +64,8 @@ pub enum AppCommand {
     ),
     #[cfg(feature = "dag")]
     ByzCommitWithOrigins(
-        Vec<CachedBlock>, /* all blocks from old_bci + 1 to new_bci */
+        u64,                                         /* new bci */
+        Vec<CachedBlock>,                            /* all blocks from old_bci + 1 to new_bci */
         std::collections::HashMap<HashType, String>, /* block_hash -> origin_node map for proxy pattern */
     ),
     Rollback(u64 /* new last block */),
@@ -68,6 +81,14 @@ pub trait AppEngine {
     fn handle_rollback(&mut self, new_last_block: u64);
     fn handle_unlogged_request(&mut self, request: ProtoTransaction) -> ProtoTransactionResult;
     fn get_current_state(&self) -> Self::State;
+}
+
+struct LaneLogStats {
+    last_n: u64,
+    last_hash: HashType,
+    total_requests: u64,
+    total_crash_committed_txs: u64,
+    total_byz_committed_txs: u64,
 }
 
 struct LogStats {
@@ -86,6 +107,11 @@ struct LogStats {
 
     #[cfg(feature = "extra_2pc")]
     total_2pc_txs: u64,
+
+    #[cfg(feature = "dag")]
+    lane_stats: LaneLogStats,
+    #[cfg(feature = "dag")]
+    total_cars: u64,
 }
 
 impl LogStats {
@@ -106,6 +132,17 @@ impl LogStats {
 
             #[cfg(feature = "extra_2pc")]
             total_2pc_txs: 0,
+
+            #[cfg(feature = "dag")]
+            lane_stats: LaneLogStats {
+                last_n: 0,
+                last_hash: default_hash(),
+                total_requests: 0,
+                total_crash_committed_txs: 0,
+                total_byz_committed_txs: 0,
+            },
+            #[cfg(feature = "dag")]
+            total_cars: 0,
         };
 
         #[cfg(not(feature = "view_change"))]
@@ -133,6 +170,10 @@ impl LogStats {
             self.view_is_stable,
             self.i_am_leader
         );
+        #[cfg(feature = "dag")]
+        {
+            info!("Total CARs: {}", self.total_cars);
+        }
 
         info!("Total unlogged txs: {}", self.total_unlogged_txs);
 
@@ -140,6 +181,17 @@ impl LogStats {
         {
             info!("Total 2PC txs: {}", self.total_2pc_txs);
         }
+    }
+
+    #[cfg(feature = "dag")]
+    fn print_lane(&self) {
+        info!("Lane Stats -- lane.last_n = {}, lane.last_hash = {}, num_client_request = {}, num_crash_committed_txs = {}, num_byz_committed_txs = {}",
+            self.lane_stats.last_n,
+            self.lane_stats.last_hash.encode_hex::<String>(),
+            self.lane_stats.total_requests,
+            self.lane_stats.total_crash_committed_txs,
+            self.lane_stats.total_byz_committed_txs,
+        );
     }
 }
 
@@ -314,6 +366,7 @@ impl<'a, E: AppEngine + Send + Sync + 'a> Application<'a, E> {
 
     async fn handle_staging_command(&mut self, cmd: AppCommand) {
         match cmd {
+            #[cfg(not(feature = "dag"))]
             AppCommand::NewRequestBatch(
                 n,
                 view,
@@ -329,6 +382,50 @@ impl<'a, E: AppEngine + Send + Sync + 'a> Application<'a, E> {
                 self.stats.last_hash = last_hash;
 
                 self.stats.total_requests += length as u64;
+
+                if self.stats.last_n % 1000 == 0 {
+                    // This is necessary for manual sanity checks.
+                    self.stats.print();
+                }
+
+                self.perf_register(n);
+            }
+            #[cfg(feature = "dag")]
+            AppCommand::NewRequestBatch(
+                n,
+                view,
+                view_is_stable,
+                i_am_leader,
+                length,
+                last_hash,
+                is_my_lane,
+            ) => {
+                if is_my_lane {
+                    self.stats.lane_stats.last_n = n;
+                    self.stats.lane_stats.total_requests += length as u64;
+                    self.stats.lane_stats.last_hash = last_hash;
+                }
+                self.stats.view = view;
+                self.stats.view_is_stable = view_is_stable;
+                self.stats.i_am_leader = i_am_leader;
+
+                self.stats.total_requests += length as u64;
+
+                if is_my_lane && self.stats.lane_stats.last_n % 1000 == 0 {
+                    // This is necessary for manual sanity checks.
+                    self.stats.print_lane();
+                }
+
+                self.perf_register(n);
+            }
+            #[cfg(feature = "dag")]
+            AppCommand::NewTipCut(n, view, view_is_stable, i_am_leader, num_cars, last_hash) => {
+                self.stats.last_n = n;
+                self.stats.view = view;
+                self.stats.view_is_stable = view_is_stable;
+                self.stats.i_am_leader = i_am_leader;
+                self.stats.last_hash = last_hash;
+                self.stats.total_cars += num_cars as u64;
 
                 if self.stats.last_n % 1000 == 0 {
                     // This is necessary for manual sanity checks.
@@ -385,23 +482,13 @@ impl<'a, E: AppEngine + Send + Sync + 'a> Application<'a, E> {
                 }
             }
             #[cfg(feature = "dag")]
-            AppCommand::CrashCommitWithOrigins(blocks, origin_map) => {
+            AppCommand::CrashCommitWithOrigins(new_ci, new_last_qc, blocks, origin_map) => {
                 // DAG mode: Handle crash commit with origin node information for proxy pattern
                 let my_name = self.config.get().net_config.name.clone();
 
-                let mut new_ci = self.stats.ci;
-                let mut new_last_qc = self.stats.last_qc;
                 let (block_hashes, block_ns) = blocks
                     .iter()
-                    .map(|block| {
-                        if new_ci < block.block.n {
-                            new_ci = block.block.n;
-                        }
-                        if new_last_qc < block.block.n {
-                            new_last_qc = block.block.n;
-                        }
-                        (block.block_hash.clone(), block.block.n)
-                    })
+                    .map(|block| (block.block_hash.clone(), block.block.n))
                     .collect::<(Vec<_>, Vec<_>)>();
 
                 let results = self.engine.handle_crash_commit(blocks);
@@ -485,19 +572,13 @@ impl<'a, E: AppEngine + Send + Sync + 'a> Application<'a, E> {
                 }
             }
             #[cfg(feature = "dag")]
-            AppCommand::ByzCommitWithOrigins(blocks, origin_map) => {
+            AppCommand::ByzCommitWithOrigins(new_bci, blocks, origin_map) => {
                 // DAG mode: Handle execution with origin node information for proxy pattern
                 let my_name = self.config.get().net_config.name.clone();
 
-                let mut new_bci = self.stats.bci;
                 let (block_hashes, block_ns) = blocks
                     .iter()
-                    .map(|block| {
-                        if new_bci < block.block.n {
-                            new_bci = block.block.n;
-                        }
-                        (block.block_hash.clone(), block.block.n)
-                    })
+                    .map(|block| (block.block_hash.clone(), block.block.n))
                     .collect::<(Vec<_>, Vec<_>)>();
 
                 let results = self.engine.handle_byz_commit(blocks);

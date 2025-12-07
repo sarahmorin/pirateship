@@ -961,6 +961,8 @@ impl Staging {
                 })
                 .collect();
 
+            let mut new_last_qc = 0;
+
             for tipcut in tipcuts {
                 match self.dag_fetch_and_sort_tipcut(&tipcut.tipcut.clone()).await {
                     Ok((sorted_blocks, origin_map)) => {
@@ -976,6 +978,13 @@ impl Staging {
                         for car in &tipcut.tipcut.tips {
                             self.last_lane_seq.insert(car.origin_node.clone(), car.n);
                         }
+
+                        // Update new_last_qc
+                        for qc in &tipcut.tipcut.qc {
+                            if qc.n > new_last_qc {
+                                new_last_qc = qc.n;
+                            }
+                        }
                     }
                     Err(e) => {
                         // FIXME: We can get caught in a loop here if we get blocked fetching a missing block.
@@ -987,7 +996,7 @@ impl Staging {
             }
 
             // Build payload from cache up to new_ci (preserving tipcut boundaries)
-            let (committed_blocks, origin_map_total, _consumed) =
+            let (committed_blocks, origin_map_total) =
                 self.dag_build_payload_from_cache(old_ci, new_ci);
             debug!(
                 "[DAG STAGING] crash_commit_send: blocks={} origins={}",
@@ -997,6 +1006,8 @@ impl Staging {
             let _ = self
                 .app_tx
                 .send(AppCommand::CrashCommitWithOrigins(
+                    new_ci,
+                    new_last_qc,
                     committed_blocks.clone(),
                     origin_map_total,
                 ))
@@ -1239,22 +1250,25 @@ impl Staging {
         #[cfg(feature = "dag")]
         {
             // Reuse cached exec batches; build payload for [old_bci, new_bci]
-            let (blocks_for_app, origin_map_total, consumed_batches) =
+            let (blocks_for_app, origin_map_total) =
                 self.dag_build_payload_from_cache(old_bci, new_bci);
             if blocks_for_app.is_empty() {
-                warn!("[DAG STAGING] byz_commit_empty_payload: old_bci={} new_bci={} consumed_batches={}", old_bci, new_bci, consumed_batches);
+                warn!(
+                    "[DAG STAGING] byz_commit_empty_payload: old_bci={} new_bci={}",
+                    old_bci, new_bci,
+                );
             } else {
                 debug!(
-                    "[DAG STAGING] byz_commit_send: blocks={} origins={} consumed_batches={}",
+                    "[DAG STAGING] byz_commit_send: blocks={} origins={}",
                     blocks_for_app.len(),
-                    origin_map_total.len(),
-                    consumed_batches
+                    origin_map_total.len()
                 );
             }
 
             let _ = self
                 .app_tx
                 .send(AppCommand::ByzCommitWithOrigins(
+                    new_bci,
                     blocks_for_app,
                     origin_map_total,
                 ))
