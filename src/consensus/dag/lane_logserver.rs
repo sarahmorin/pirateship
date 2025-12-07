@@ -632,7 +632,7 @@ impl LaneLogServer {
                 let len = lane_hint.hints.len();
 
                 let res = sender.send(lane_hint).await;
-                info!("Sent lane hints size {}, result = {:?}", len, res);
+                debug!("Sent lane hints size {}, result = {:?}", len, res);
             }
             LaneLogServerQuery::CheckCar(lane_id, n, digest, sender) => {
                 if n == 0 {

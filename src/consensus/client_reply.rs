@@ -240,7 +240,7 @@ impl ClientReplyHandler {
 
                     let (batch_hash_chan, mut reply_vec) = batch.unwrap();
                     let batch_hash = batch_hash_chan.await.unwrap();
-                    trace!("DAG-DBG registration: got batch hash {:?} with {} reply slots", hex::encode(&batch_hash), reply_vec.len());
+                    debug!("[DAG CLIENT] registration: got batch hash {:?} with {} reply slots", hex::encode(&batch_hash), reply_vec.len());
 
                     if batch_hash.is_empty() || self.must_cancel {
                         // This is called when !listen_on_new_batch
@@ -263,7 +263,7 @@ impl ClientReplyHandler {
 
                     self.byz_reply_map.insert(batch_hash.clone(), reply_vec.iter().map(|(_, client_tag, sender)| (*client_tag, sender.clone())).collect());
                     self.reply_map.insert(batch_hash.clone(), reply_vec);
-                    trace!("DAG-DBG registration: reply_map size now {} (added {:?})", self.reply_map.len(), hex::encode(&batch_hash));
+                    debug!("[DAG CLIENT] registration: reply_map size now {} (added {:?})", self.reply_map.len(), hex::encode(&batch_hash));
 
                     self.maybe_clear_reply_buf(batch_hash).await;
                 },
@@ -273,7 +273,7 @@ impl ClientReplyHandler {
                     }
 
                     let cmd = cmd.unwrap();
-                    trace!("DAG-DBG handle_reply_command: received command");
+                    trace!("[DAG CLIENT] handle_reply_command: received command");
 
                     self.handle_reply_command(cmd).await;
                 },
@@ -284,7 +284,7 @@ impl ClientReplyHandler {
                     }
 
                     let results = execution_results.unwrap();
-                    debug!("DAG-DBG received forwarded ExecutionResults for block {:?} (n={})", hex::encode(&results.block_hash), results.block_n);
+                    debug!("[DAG CLIENT] received forwarded ExecutionResults for block {:?} (n={})", hex::encode(&results.block_hash), results.block_n);
                     self.handle_forwarded_results(results).await;
                 },
                 // Byz results for DAG mode only
@@ -294,59 +294,13 @@ impl ClientReplyHandler {
                     }
 
                     let byz = byz_results.unwrap();
-                    debug!("DAG-DBG received forwarded ByzResults for block {:?} (n={}) count={}", hex::encode(&byz.block_hash), byz.block_n, byz.responses.len());
+                    debug!("[DAG CLIENT] received forwarded ByzResults for block {:?} (n={}) count={}", hex::encode(&byz.block_hash), byz.block_n, byz.responses.len());
                     self.handle_forwarded_byz_results(byz).await;
                 },
             }
         }
 
         #[cfg(not(feature = "dag"))]
-        {
-            tokio::select! {
-                batch = self.batch_rx.recv() => {
-                    if batch.is_none() {
-                        return Ok(());
-                    }
-
-                    let (batch_hash_chan, mut reply_vec) = batch.unwrap();
-                    let batch_hash = batch_hash_chan.await.unwrap();
-
-                    if batch_hash.is_empty() || self.must_cancel {
-                        // This is called when !listen_on_new_batch
-                        // This must be cancelled.
-                        if reply_vec.len() > 0 {
-                            info!("Clearing out queued replies of size {}", reply_vec.len());
-                            let node_infos = NodeInfo {
-                                nodes: self.config.get().net_config.nodes.clone()
-                            };
-                            for (chan, tag, _) in reply_vec.drain(..) {
-                                let reply = Self::get_try_again_message(tag, &node_infos);
-                                let reply_ser = reply.encode_to_vec();
-                                let _sz = reply_ser.len();
-                                let reply_msg = PinnedMessage::from(reply_ser, _sz, crate::rpc::SenderType::Anon);
-                                let _ = chan.send((reply_msg, LatencyProfile::new())).await;
-                            }
-                        }
-                        return Ok(());
-                    }
-
-                    self.byz_reply_map.insert(batch_hash.clone(), reply_vec.iter().map(|(_, client_tag, sender)| (*client_tag, sender.clone())).collect());
-                    self.reply_map.insert(batch_hash.clone(), reply_vec);
-
-                    self.maybe_clear_reply_buf(batch_hash).await;
-                },
-                cmd = self.reply_command_rx.recv() => {
-                    if cmd.is_none() {
-                        return Ok(());
-                    }
-
-                    let cmd = cmd.unwrap();
-
-                    self.handle_reply_command(cmd).await;
-                },
-            }
-        }
-
         {
             tokio::select! {
                 batch = self.batch_rx.recv() => {
@@ -476,7 +430,7 @@ impl ClientReplyHandler {
                     nodes: self.config.get().net_config.nodes.clone(),
                 };
                 warn!(
-                    "DAG-DBG CancelAllRequests: reply_map={}, byz_reply_map={}",
+                    "[DAG CLIENT] CancelAllRequests: reply_map={}, byz_reply_map={}",
                     self.reply_map.len(),
                     self.byz_reply_map.len()
                 );
@@ -492,13 +446,13 @@ impl ClientReplyHandler {
                 }
 
                 self.must_cancel = true;
-                warn!("DAG-DBG must_cancel set -> new requests will TryAgain");
+                warn!("[DAG CLIENT] must_cancel set -> new requests will TryAgain");
             }
             ClientReplyCommand::CrashCommitAck(crash_commit_ack) => {
                 for (hash, (n, reply_vec)) in crash_commit_ack {
                     if let Some(reply_sender_vec) = self.reply_map.remove(&hash) {
                         debug!(
-                            "DAG-DBG CrashCommitAck: delivering local results for {:?} (n={})",
+                            "[DAG CLIENT] CrashCommitAck: delivering local results for {:?} (n={})",
                             hex::encode(&hash),
                             n
                         );
@@ -506,7 +460,7 @@ impl ClientReplyHandler {
                             .await;
                     } else {
                         debug!(
-                            "DAG-DBG CrashCommitAck: buffering results for {:?} (n={})",
+                            "[DAG CLIENT] CrashCommitAck: buffering results for {:?} (n={})",
                             hex::encode(&hash),
                             n
                         );
@@ -519,7 +473,7 @@ impl ClientReplyHandler {
                 for (hash, (n, reply_vec)) in byz_commit_ack {
                     if let Some(reply_sender_vec) = self.byz_reply_map.remove(&hash) {
                         debug!(
-                            "DAG-DBG ByzCommitAck: delivering local byz responses for {:?} (n={})",
+                            "[DAG CLIENT] ByzCommitAck: delivering local byz responses for {:?} (n={})",
                             hex::encode(&hash),
                             n
                         );
@@ -527,7 +481,7 @@ impl ClientReplyHandler {
                             .await;
                     } else {
                         debug!(
-                            "DAG-DBG ByzCommitAck: buffering byz responses for {:?} (n={})",
+                            "[DAG CLIENT] ByzCommitAck: buffering byz responses for {:?} (n={})",
                             hex::encode(&hash),
                             n
                         );
@@ -563,7 +517,7 @@ impl ClientReplyHandler {
             #[cfg(feature = "dag")]
             ClientReplyCommand::CrashCommitAckWithOrigins(crash_commit_ack_with_origins) => {
                 debug!(
-                    "DAG-DBG CrashCommitAckWithOrigins: {} entries",
+                    "[DAG CLIENT] CrashCommitAckWithOrigins: {} entries",
                     crash_commit_ack_with_origins.len()
                 );
                 self.handle_crash_commit_ack_with_origins(crash_commit_ack_with_origins)
@@ -572,7 +526,7 @@ impl ClientReplyHandler {
             #[cfg(feature = "dag")]
             ClientReplyCommand::ByzCommitAckWithOrigins(byz_commit_ack_with_origins) => {
                 debug!(
-                    "DAG-DBG ByzCommitAckWithOrigins: {} entries",
+                    "[DAG CLIENT] ByzCommitAckWithOrigins: {} entries",
                     byz_commit_ack_with_origins.len()
                 );
                 self.handle_byz_commit_ack_with_origins(byz_commit_ack_with_origins)
@@ -662,7 +616,7 @@ impl ClientReplyHandler {
             if origin_node == my_name {
                 // This result originated from this node - handle locally
                 debug!(
-                    "DAG-DBG origin match: local delivery for {:?} (n={})",
+                    "[DAG CLIENT] origin match: local delivery for {:?} (n={})",
                     hex::encode(&hash),
                     n
                 );
@@ -672,7 +626,7 @@ impl ClientReplyHandler {
                 } else {
                     // Store for later if request hasn't arrived yet
                     debug!(
-                        "DAG-DBG origin match: buffering local results for {:?} (n={})",
+                        "[DAG CLIENT] origin match: buffering local results for {:?} (n={})",
                         hex::encode(&hash),
                         n
                     );
@@ -680,8 +634,8 @@ impl ClientReplyHandler {
                 }
             } else {
                 // Forward to origin node
-                warn!(
-                    "DAG-DBG origin miss: forwarding execution results for {:?} (n={}) to {}",
+                debug!(
+                    "[DAG CLIENT] origin miss: forwarding execution results for {:?} (n={}) to {}",
                     hex::encode(&hash),
                     n,
                     origin_node
@@ -708,7 +662,7 @@ impl ClientReplyHandler {
             if origin_node == my_name {
                 // This result originated from this node - handle locally
                 debug!(
-                    "DAG-DBG origin match: local byz delivery for {:?} (n={})",
+                    "[DAG CLIENT] origin match: local byz delivery for {:?} (n={})",
                     hex::encode(&hash),
                     n
                 );
@@ -718,7 +672,7 @@ impl ClientReplyHandler {
                 } else {
                     // Store for later if request hasn't arrived yet
                     debug!(
-                        "DAG-DBG origin match: buffering local byz for {:?} (n={})",
+                        "[DAG CLIENT] origin match: buffering local byz for {:?} (n={})",
                         hex::encode(&hash),
                         n
                     );
@@ -727,7 +681,7 @@ impl ClientReplyHandler {
             } else {
                 // Forward to origin node (convert ProtoByzResponse to ProtoTransactionResult)
                 // Forward byzantine responses to origin node to attach locally to receipts
-                warn!("DAG-DBG origin miss: forwarding byz results for {:?} (n={}) to {} ({} responses)", hex::encode(&hash), n, origin_node, reply_vec.len());
+                debug!("[DAG CLIENT] origin miss: forwarding byz results for {:?} (n={}) to {} ({} responses)", hex::encode(&hash), n, origin_node, reply_vec.len());
                 let byz_results = ProtoByzResults {
                     block_hash: hash.clone(),
                     block_n: n,
@@ -749,7 +703,7 @@ impl ClientReplyHandler {
                 .await
                 {
                     warn!(
-                        "Failed to forward byz responses to origin node {}: {:?}",
+                        "[DAG CLIENT] Failed to forward byz responses to origin node {}: {:?}",
                         origin_node, e
                     );
                 }
@@ -766,8 +720,8 @@ impl ClientReplyHandler {
         results: Vec<ProtoTransactionResult>,
         origin_node: String,
     ) {
-        warn!(
-            "DAG-DBG forwarding ExecutionResults: n={}, hash={:?}, to={} ({} results)",
+        debug!(
+            "[DAG CLIENT] forwarding ExecutionResults: n={}, hash={:?}, to={} ({} results)",
             block_n,
             hex::encode(&block_hash),
             origin_node,
@@ -800,7 +754,7 @@ impl ClientReplyHandler {
         .await
         {
             warn!(
-                "DAG-DBG forwarding ExecutionResults failed: to={}, err={:?}",
+                "[DAG CLIENT] forwarding ExecutionResults failed: to={}, err={:?}",
                 origin_node, e
             );
         }
@@ -813,8 +767,8 @@ impl ClientReplyHandler {
         &mut self,
         results: crate::proto::consensus::ProtoExecutionResults,
     ) {
-        warn!(
-            "DAG-DBG handle_forwarded_results: n={}, hash={:?}, reply_map_has={}",
+        debug!(
+            "[DAG CLIENT] handle_forwarded_results: n={}, hash={:?}, reply_map_has={}",
             results.block_n,
             hex::encode(&results.block_hash),
             self.reply_map.contains_key(&results.block_hash)
@@ -830,10 +784,15 @@ impl ClientReplyHandler {
             )
             .await;
         } else {
-            warn!(
-                "DAG-DBG DROPPING forwarded ExecutionResults: no reply_map entry for hash={:?}; results={} (add buffering?)",
+            // FIXME: Handle case where we have already replied and this is a duplicate
+            debug!(
+                "[DAG CLIENT] buffering forwarded ExecutionResults: no reply_map entry for hash={:?}; results={}",
                 hex::encode(&results.block_hash),
                 results.results.len()
+            );
+            self.crash_commit_reply_buf.insert(
+                results.block_hash.clone(),
+                (results.block_n, results.results.clone()),
             );
         }
     }
@@ -845,8 +804,8 @@ impl ClientReplyHandler {
         &mut self,
         byz: crate::proto::consensus::ProtoByzResults,
     ) {
-        warn!(
-            "DAG-DBG handle_forwarded_byz_results: n={}, hash={:?}, count={}, has_byz_reply_map={}",
+        debug!(
+            "[DAG CLIENT] handle_forwarded_byz_results: n={}, hash={:?}, count={}, has_byz_reply_map={}",
             byz.block_n,
             hex::encode(&byz.block_hash),
             byz.responses.len(),
@@ -867,6 +826,12 @@ impl ClientReplyHandler {
             )
             .await;
         } else {
+            // FIXME: Handle case where we have already replied and this is a duplicate
+            debug!(
+                "[DAG CLIENT] buffering forwarded ByzResults: no reply_map entry for hash={:?}; results={}",
+                hex::encode(&byz.block_hash),
+                byz.responses.len()
+            );
             // Otherwise, buffer for later
             self.byz_commit_reply_buf
                 .insert(block_hash.clone(), (block_n, responses.clone()));

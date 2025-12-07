@@ -454,7 +454,7 @@ impl LaneStaging {
             }
         };
 
-        info!(
+        debug!(
             "[DAG LANE STAGING] Verifying BlockAck: from={} lane={} n={} digest_len={} sig_len={}",
             sender_name,
             lane_id,
@@ -595,7 +595,7 @@ impl LaneStaging {
                 return Ok(());
             }
 
-            info!(
+            debug!(
                 "[DAG LANE STAGING] Forming CAR for block n={} in lane {:?} (acks including self: {}/{})",
                 seq_num, lane_id, effective_ack_count, threshold
             );
@@ -695,7 +695,7 @@ impl LaneStaging {
         // Process any children that were waiting on this parent
         self.process_pending_children(lane_id, seq_num).await?;
 
-        info!(
+        debug!(
             "Block n={} in lane {} is now stable with CAR",
             seq_num, lane_id
         );
@@ -731,7 +731,7 @@ impl LaneStaging {
     async fn broadcast_car(&mut self, car: ProtoBlockCar) -> Result<(), ()> {
         let config = self.config.get();
 
-        info!(
+        debug!(
             "[DAG LANE STAGING] car_broadcast: origin={} n={} sig_count={} recipients={} digest_len={}",
             car.origin_node,
             car.n,
@@ -1049,7 +1049,7 @@ impl LaneStaging {
             }
         }
 
-        info!(
+        debug!(
             "Accepting remote CAR from {} for lane {} seq {} with {} signatures",
             sender_name,
             lane_id,

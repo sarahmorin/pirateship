@@ -1252,18 +1252,13 @@ impl Staging {
             // Reuse cached exec batches; build payload for [old_bci, new_bci]
             let (blocks_for_app, origin_map_total) =
                 self.dag_build_payload_from_cache(old_bci, new_bci);
-            if blocks_for_app.is_empty() {
-                warn!(
-                    "[DAG STAGING] byz_commit_empty_payload: old_bci={} new_bci={}",
-                    old_bci, new_bci,
-                );
-            } else {
-                debug!(
-                    "[DAG STAGING] byz_commit_send: blocks={} origins={}",
-                    blocks_for_app.len(),
-                    origin_map_total.len()
-                );
-            }
+            debug!(
+                "[DAG STAGING] byz_commit_send: old_bci={} new_bci={} blocks={} origins={}",
+                old_bci,
+                new_bci,
+                blocks_for_app.len(),
+                origin_map_total.len()
+            );
 
             let _ = self
                 .app_tx

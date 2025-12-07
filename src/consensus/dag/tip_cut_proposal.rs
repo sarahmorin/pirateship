@@ -112,7 +112,7 @@ impl TipCutProposal {
             (1, leader == *my_name, leader, true, 1)
         };
 
-        info!(
+        debug!(
             "TipCutProposal initialized: view={}, i_am_leader={}, leader={}, view_is_stable={}, config_num={}",
             view, i_am_leader, current_leader, view_is_stable, config_num
         );
@@ -213,7 +213,7 @@ impl TipCutProposal {
     }
 
     fn handle_command(&mut self, cmd: TipCutProposalCommand) {
-        info!("TipCutProposal received command: {:?}", cmd);
+        debug!("TipCutProposal received command: {:?}", cmd);
         match cmd {
             // Follow the changes, no questions asked!
             TipCutProposalCommand::NewUnstableView(v, c) => {
@@ -237,7 +237,7 @@ impl TipCutProposal {
 
     /// Query lane_staging for current tip cut and broadcast it to all nodes.
     async fn propose_tip_cut(&mut self, use_threshold: bool) -> Result<(), ()> {
-        info!(
+        debug!(
             "Proposing tip cut for view {} (ci={}), use_threshold={}",
             self.view, self.ci, use_threshold
         );
@@ -284,7 +284,7 @@ impl TipCutProposal {
             let have = filtered.len();
             let need = self.tip_cut_max_cars;
             if need > 0 && have < need {
-                info!(
+                warn!(
                     "Not enough NEW CARs for threshold tip cut: have {} need {} (after watermark)",
                     have, need
                 );
@@ -300,7 +300,7 @@ impl TipCutProposal {
             return Ok(());
         }
 
-        info!(
+        debug!(
             "Proposing tip cut with {} NEW CARs for view {} (ci={})",
             filtered.len(),
             self.view,
@@ -330,7 +330,7 @@ impl TipCutProposal {
         self.consensus_sequencer_tx.send(cars).await.map_err(|e| {
             error!("Failed to send tip cut to BlockSequencer: {:?}", e);
         })?;
-        info!("Sent tip cut to BlockSequencer for sequencing and broadcasting");
+        debug!("Sent tip cut to BlockSequencer for sequencing and broadcasting");
         Ok(())
     }
 

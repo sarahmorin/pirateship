@@ -247,7 +247,7 @@ impl BlockReceiver {
             {
                 // Send NACK for this lane
                 self.send_lane_nack(lane_id.clone(), sender, blocks).await;
-                info!("Returning after sending NACK for lane {}", lane_id);
+                debug!("Returning after sending NACK for lane {}", lane_id);
                 return;
             }
         }
@@ -299,7 +299,7 @@ impl BlockReceiver {
     }
 
     async fn handle_command(&mut self, cmd: BlockReceiverCommand) {
-        info!("Handling BlockReceiver command");
+        debug!("Handling BlockReceiver command");
         match cmd {
             BlockReceiverCommand::UseBackfillResponse(block_lane, sender) => {
                 // For backfill responses, use the lane_id from the message if present
