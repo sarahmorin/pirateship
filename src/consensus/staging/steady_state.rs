@@ -936,7 +936,6 @@ impl Staging {
                     BlockOrTipCut::Block(b) => b.clone(),
                     _ => {
                         warn!("Found committed tip cut during crash commit");
-                        panic!("Found committed tip cut during crash commit");
                     }
                 })
                 .collect::<Vec<_>>();

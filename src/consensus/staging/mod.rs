@@ -346,7 +346,7 @@ impl Staging {
             lane_cache = self.lane_cache_rx.recv() => {
                 match lane_cache {
                     Some((lane_id, block)) => {
-                        warn!("[DAG STAGING] lane_cache_event: lane={} n={} txs={}", lane_id, block.block.n, block.block.tx_list.len());
+                        debug!("[DAG STAGING] lane_cache_event: lane={} n={} txs={}", lane_id, block.block.n, block.block.tx_list.len());
                         self.cache_insert_block(&lane_id, &block);
                     }
                     None => {
@@ -418,7 +418,7 @@ impl Staging {
             lane_cache = self.lane_cache_rx.recv() => {
                 match lane_cache {
                     Some((lane_id, block)) => {
-                        warn!("[DAG STAGING] lane_cache_event: lane={} n={} txs={}", lane_id, block.block.n, block.block.tx_list.len());
+                        debug!("[DAG STAGING] lane_cache_event: lane={} n={} txs={}", lane_id, block.block.n, block.block.tx_list.len());
                         self.cache_insert_block(&lane_id, &block);
                     }
                     None => {
@@ -488,7 +488,7 @@ impl Staging {
                 lane_id, block.block.n
             );
         } else {
-            warn!(
+            debug!(
                 "[DAG STAGING] cache_insert: lane={} n={} hash_len={}",
                 lane_id,
                 block.block.n,
@@ -534,11 +534,11 @@ impl Staging {
             async move {
                 if let Some(map) = cache.get(&lane_id) {
                     if let Some(block) = map.get(&seq) {
-                        warn!("[DAG STAGING] cache_hit: lane={} n={}", lane_id, seq);
+                        debug!("[DAG STAGING] cache_hit: lane={} n={}", lane_id, seq);
                         return Some(block.clone());
                     }
                 }
-                warn!("[DAG STAGING] cache_miss: lane={} n={}", lane_id, seq);
+                debug!("[DAG STAGING] cache_miss: lane={} n={}", lane_id, seq);
                 None
             }
         };

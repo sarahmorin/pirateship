@@ -13,7 +13,7 @@
 
 #![cfg(feature = "dag")]
 
-use log::warn;
+use log::{debug, warn};
 use std::collections::{HashMap, VecDeque};
 use std::future::Future;
 
@@ -49,7 +49,7 @@ where
     F: FnMut(&str, u64) -> Fut,
     Fut: Future<Output = Option<CachedBlock>>,
 {
-    warn!(
+    debug!(
         "[DAG SORT] start: cars={} lanes_with_last_seq={}",
         cars.len(),
         last_lane_seq.len()
@@ -62,12 +62,12 @@ where
 
     for (lane_id, car) in cars {
         let start_seq = *last_lane_seq.get(lane_id.as_str()).unwrap_or(&0);
-        warn!(
+        debug!(
             "[DAG SORT] lane={} car_n={} last_seq={}",
             lane_id, car.n, start_seq
         );
         if car.n <= start_seq {
-            warn!(
+            debug!(
                 "[DAG SORT] skip_lane_no_new: lane={} car_n={} last_seq={}",
                 lane_id, car.n, start_seq
             );
@@ -76,7 +76,7 @@ where
 
         // Fetch blocks in (start_seq, car.n]
         for seq in (start_seq + 1)..=car.n {
-            warn!("[DAG SORT] fetch_block: lane={} seq={}", lane_id, seq);
+            debug!("[DAG SORT] fetch_block: lane={} seq={}", lane_id, seq);
             match fetch(lane_id.as_str(), seq).await {
                 Some(cb) => {
                     // Origin for all blocks of this lane is the CAR's origin_node
@@ -84,7 +84,7 @@ where
                         .entry(cb.block_hash.clone())
                         .or_insert_with(|| car.origin_node.clone());
                     blocks.push((cb, lane_id.clone()));
-                    warn!("[DAG SORT] fetched_ok: lane={} seq={}", lane_id, seq);
+                    debug!("[DAG SORT] fetched_ok: lane={} seq={}", lane_id, seq);
                 }
                 None => {
                     warn!(
@@ -98,23 +98,23 @@ where
                 }
             }
         }
-        warn!("[DAG SORT] lane_done: lane={} up_to={}", lane_id, car.n);
+        debug!("[DAG SORT] lane_done: lane={} up_to={}", lane_id, car.n);
     }
 
     if blocks.is_empty() {
-        warn!("[DAG SORT] no_blocks_to_sort");
+        debug!("[DAG SORT] no_blocks_to_sort");
         return Ok((Vec::new(), origin_map));
     }
 
     // 2) Topological sort with deterministic tie-breaking (lane_id, seq)
-    warn!(
+    debug!(
         "[DAG SORT] topo_begin: blocks={} lanes={}",
         blocks.len(),
         origin_map.len()
     );
     let sorted = match topo_sort_blocks(blocks) {
         Ok(s) => {
-            warn!("[DAG SORT] topo_ok: sorted_blocks={}", s.len());
+            debug!("[DAG SORT] topo_ok: sorted_blocks={}", s.len());
             s
         }
         Err(e) => {
@@ -131,7 +131,7 @@ where
             .or_insert_with(String::new);
     }
 
-    warn!(
+    debug!(
         "[DAG SORT] done: returned_blocks={} origin_map_size={}",
         sorted.len(),
         origin_map.len()
@@ -143,7 +143,7 @@ where
 fn topo_sort_blocks(
     blocks_with_lane: Vec<(CachedBlock, String)>,
 ) -> Result<Vec<CachedBlock>, TipCutSortError> {
-    warn!("[DAG SORT] topo_input: blocks={}", blocks_with_lane.len());
+    debug!("[DAG SORT] topo_input: blocks={}", blocks_with_lane.len());
     // Split for convenience
     let blocks: Vec<CachedBlock> = blocks_with_lane.iter().map(|(b, _)| b.clone()).collect();
     let lanes: Vec<String> = blocks_with_lane.iter().map(|(_, l)| l.clone()).collect();
@@ -164,7 +164,7 @@ fn topo_sort_blocks(
             indegree[i] += 1;
         }
     }
-    warn!(
+    debug!(
         "[DAG SORT] topo_graph: nodes={} edges={}",
         blocks.len(),
         children.iter().map(|v| v.len()).sum::<usize>()
@@ -177,7 +177,7 @@ fn topo_sort_blocks(
         .filter(|(_, &d)| d == 0)
         .map(|(i, _)| i)
         .collect();
-    warn!("[DAG SORT] topo_ready_initial={} (indegree0)", ready.len());
+    debug!("[DAG SORT] topo_ready_initial={} (indegree0)", ready.len());
 
     // Deterministic tie-breaker: (lane_id, seq)
     ready.sort_by(|&i, &j| {
@@ -199,7 +199,7 @@ fn topo_sort_blocks(
             }
         }
         if !newly_ready.is_empty() {
-            warn!(
+            debug!(
                 "[DAG SORT] topo_new_ready={} after_pop i={} seq={} lane={} ",
                 newly_ready.len(),
                 i,
@@ -227,7 +227,7 @@ fn topo_sort_blocks(
         });
     }
 
-    warn!("[DAG SORT] topo_success: produced={}", out.len());
+    debug!("[DAG SORT] topo_success: produced={}", out.len());
     Ok(out)
 }
 
