@@ -122,7 +122,7 @@ pirateship = ["round_robin_leader", "dynamic_sign", "view_change"]
 dag_pirateship = ["pirateship", "app_logger", "storage", "fast_path", "platforms", "dag"]
 dag_sraft = ["signed_raft", "app_logger", "storage", "fast_path", "platforms", "dag"]
 
-default = ["signed_raft", "app_logger","dag"]
+default = ["signed_raft", "app_logger","dag", "storage"]
 # default = ["pirateship", "app_logger", "storage", "fast_path", "platforms", "dag"]
 # default = ["signed_raft", "app_logger", "storage", "fast_path", "platforms", "dag", ]
 # default = ["pirateship", "app_logger", "storage", "fast_path", "platforms", "dag", ]
