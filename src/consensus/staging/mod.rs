@@ -58,6 +58,15 @@ pub(super) mod fork_choice;
 pub(super) mod steady_state;
 pub(super) mod view_change;
 
+// DAG-only exec batch cache entry; module-level to be used by Staging
+#[cfg(feature = "dag")]
+#[derive(Clone, Debug)]
+pub(super) struct ExecBatch {
+    pub tipcut: CachedTipCut,
+    pub blocks: Vec<CachedBlock>,
+    pub origins: HashMap<HashType, String>, // hash -> origin node
+}
+
 struct CachedBlockWithVotes {
     block: CachedBlock,
 
@@ -188,6 +197,11 @@ pub struct Staging {
     // DAG-only: receive cache updates for lane blocks directly from LaneStaging/BlockBroadcaster
     #[cfg(feature = "dag")]
     lane_cache_rx: Receiver<(String /* lane_id */, CachedBlock)>,
+
+    // DAG-only: execution cache of sorted blocks per committed tipcut
+    // Ensures we reuse sort results and preserve tipcut boundaries between crash and byz commit
+    #[cfg(feature = "dag")]
+    exec_batches: VecDeque<ExecBatch>,
 }
 
 impl Staging {
@@ -291,6 +305,8 @@ impl Staging {
             last_committed_lane_seq: HashMap::new(),
             #[cfg(feature = "dag")]
             lane_cache_rx,
+            #[cfg(feature = "dag")]
+            exec_batches: VecDeque::new(),
 
             #[cfg(feature = "extra_2pc")]
             two_pc_command_tx,
@@ -459,8 +475,6 @@ impl Staging {
                 } else {
                     warn!("Received vote while being a follower");
                 }
-                // #[cfg(feature = "dag")]
-                // self.handle_lane_cache_updates().await;
             },
             cmd = self.pacemaker_rx.recv() => {
                 if cmd.is_none() {
@@ -475,6 +489,7 @@ impl Staging {
     }
 
     // --------------- DAG-only helpers for Phase 1 -----------------
+
     #[cfg(feature = "dag")]
     fn cache_insert_block(&mut self, lane_id: &str, block: &CachedBlock) {
         let entry = self
@@ -544,5 +559,102 @@ impl Staging {
         };
 
         fetch_and_sort_tipcut_blocks(&cars, last_lane_seq, fetch).await
+    }
+
+    /// DAG-only: Create and append an ExecBatch for a tipcut after sorting, caching results for reuse.
+    #[cfg(feature = "dag")]
+    fn dag_append_exec_batch(
+        &mut self,
+        tipcut: CachedTipCut,
+        blocks: Vec<CachedBlock>,
+        origins: HashMap<HashType, String>,
+    ) {
+        debug!(
+            "[DAG STAGING] exec_batch_append: tipcut_digest={} blocks={} origins={}",
+            hex::encode(tipcut.tipcut_hash.clone()),
+            blocks.len(),
+            origins.len()
+        );
+        let batch = ExecBatch {
+            tipcut,
+            blocks,
+            origins,
+        };
+        self.exec_batches.push_back(batch);
+    }
+
+    /// DAG-only: Build app payload from cached exec batches covering (old_idx, new_idx], preserving batch boundaries.
+    #[cfg(feature = "dag")]
+    fn dag_build_payload_from_cache(
+        &mut self,
+        old_ci: u64,
+        new_ci: u64,
+    ) -> (Vec<CachedBlock>, HashMap<HashType, String>, usize) {
+        let mut blocks: Vec<CachedBlock> = Vec::new();
+        let mut origins: HashMap<HashType, String> = HashMap::new();
+        let mut retrieved_batches = 0;
+        let mut idx = old_ci + 1;
+
+        let mut exec_batch_iter = self.exec_batches.iter();
+
+        while let Some(batch) = exec_batch_iter.next() {
+            let batch_seq = batch.tipcut.tipcut.n;
+            // Only consume batches that advance beyond old_ci
+            if batch_seq <= old_ci {
+                debug!(
+                    "[DAG STAGING] exec_batch_skip: max_n<=old_ci max_n={} old_ci={}",
+                    batch_seq, old_ci
+                );
+                // self.exec_batches.pop_front();
+                // retrieved_batches += 1; // GC stale
+                continue;
+            }
+            // Stop when batch exceeds new_ci boundary (we don't interleave across tipcuts)
+            if batch_seq > new_ci {
+                debug!("[DAG STAGING] exec_batch_partial_boundary: batch_max_n={} new_ci={} (preserve tipcut boundary)", batch_seq, new_ci);
+                break;
+            }
+            // let batch = self.exec_batches.pop_front().unwrap();
+            retrieved_batches += 1;
+            debug!(
+                "[DAG STAGING] exec_batch_retrieved: tipcut_digest={} seq={} blocks={} origins={}",
+                hex::encode(batch.tipcut.tipcut_hash.clone()),
+                batch_seq,
+                batch.blocks.len(),
+                batch.origins.len()
+            );
+            for b in &batch.blocks {
+                blocks.push(b.clone());
+            }
+            for (h, o) in batch.origins.clone().into_iter() {
+                origins.entry(h).or_insert(o);
+            }
+        }
+
+        (blocks, origins, retrieved_batches)
+    }
+
+    /// DAG-only: Garbage collect exec batches up to but excluding ci
+    #[cfg(feature = "dag")]
+    fn dag_gc_exec_batches_up_to(&mut self, ci: u64) {
+        let mut gced = 0;
+        while let Some(batch) = self.exec_batches.front() {
+            if batch.tipcut.tipcut.n < ci {
+                debug!(
+                    "[DAG STAGING] exec_batch_gc: tipcut_digest={} max_n={} ci={}",
+                    hex::encode(batch.tipcut.tipcut_hash.clone()),
+                    batch.tipcut.tipcut.n,
+                    ci
+                );
+                self.exec_batches.pop_front();
+                gced += 1;
+            } else {
+                break;
+            }
+        }
+        debug!(
+            "[DAG STAGING] exec_batch_gc_done: up_to_ci={} batches_gced={}",
+            ci, gced
+        );
     }
 }

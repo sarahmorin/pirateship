@@ -12,7 +12,7 @@ use crate::{
         logserver::LogServerCommand,
         pacemaker::PacemakerCommand,
     },
-    crypto::{CachedBlock, HashType, DIGEST_LENGTH},
+    crypto::{CachedBlock, CachedTipCut, HashType},
     proto::{
         consensus::{
             proto_block::Sig, ProtoNameWithSignature, ProtoQuorumCertificate,
@@ -949,33 +949,31 @@ impl Staging {
         };
 
         #[cfg(feature = "dag")]
-        let blocks = {
-            // Collect the committed tip cuts first to avoid borrowing self across await
-            let tipcuts: Vec<ProtoTipCut> = self
+        {
+            // Collect committed tip cuts for [old_ci+1, new_ci] along with cached digests
+            let tipcuts: Vec<CachedTipCut> = self
                 .pending_votes
                 .iter()
                 .filter(|entry| entry.block_or_tc.n() > old_ci && entry.block_or_tc.n() <= new_ci)
                 .filter_map(|entry| match &entry.block_or_tc {
-                    BlockOrTipCut::TipCut(tc) => Some(tc.tipcut.clone()),
+                    BlockOrTipCut::TipCut(tc) => Some(tc.clone()),
                     _ => None,
                 })
                 .collect();
 
-            let mut origin_map_total: std::collections::HashMap<HashType, String> =
-                std::collections::HashMap::new();
-            let mut committed_blocks: Vec<CachedBlock> = Vec::new();
-
             for tipcut in tipcuts {
-                match self.dag_fetch_and_sort_tipcut(&tipcut).await {
-                    Ok((mut sorted_blocks, origin_map)) => {
-                        // Merge origin maps (do not override existing entries)
-                        for (k, v) in origin_map.into_iter() {
-                            origin_map_total.entry(k).or_insert(v);
-                        }
-                        committed_blocks.append(&mut sorted_blocks);
+                match self.dag_fetch_and_sort_tipcut(&tipcut.tipcut.clone()).await {
+                    Ok((sorted_blocks, origin_map)) => {
+                        debug!("[DAG STAGING] crash_commit_sort_ok: tipcut_digest={} blocks={} origins={}", hex::encode(&tipcut.tipcut_hash), sorted_blocks.len(), origin_map.len());
+                        // cache batch for reuse
+                        self.dag_append_exec_batch(
+                            tipcut.clone(),
+                            sorted_blocks.clone(),
+                            origin_map,
+                        );
 
                         // Update per-lane last committed sequence
-                        for car in &tipcut.tips {
+                        for car in &tipcut.tipcut.tips {
                             self.last_lane_seq.insert(car.origin_node.clone(), car.n);
                         }
                     }
@@ -988,7 +986,14 @@ impl Staging {
                 }
             }
 
-            // Send to app with origin info
+            // Build payload from cache up to new_ci (preserving tipcut boundaries)
+            let (committed_blocks, origin_map_total, _consumed) =
+                self.dag_build_payload_from_cache(old_ci, new_ci);
+            debug!(
+                "[DAG STAGING] crash_commit_send: blocks={} origins={}",
+                committed_blocks.len(),
+                origin_map_total.len()
+            );
             let _ = self
                 .app_tx
                 .send(AppCommand::CrashCommitWithOrigins(
@@ -996,20 +1001,18 @@ impl Staging {
                     origin_map_total,
                 ))
                 .await;
-
-            committed_blocks
+            // No return; DAG perf handled separately below
         };
 
-        #[cfg(feature = "perf")]
-        let mut block_perf_stats = Vec::new();
-        #[cfg(feature = "perf")]
-        for b in &blocks {
-            block_perf_stats.push(self.perf_add_event(&b, "Crash Commit"));
-        }
-
-        #[cfg(feature = "perf")]
-        for (signed, block_n) in block_perf_stats {
-            self.perf_add_event_from_perf_stats(signed, block_n, "Send Crash Commit to App");
+        #[cfg(all(feature = "perf", not(feature = "dag")))]
+        {
+            let mut block_perf_stats = Vec::new();
+            for b in &blocks {
+                block_perf_stats.push(self.perf_add_event(&b, "Crash Commit"));
+            }
+            for (signed, block_n) in block_perf_stats {
+                self.perf_add_event_from_perf_stats(signed, block_n, "Send Crash Commit to App");
+            }
         }
     }
 
@@ -1235,36 +1238,18 @@ impl Staging {
 
         #[cfg(feature = "dag")]
         {
-            // Build a combined list of blocks and origins from any committed tip cuts
-            let mut blocks_for_app: Vec<CachedBlock> = Vec::new();
-            let mut origin_map_total: std::collections::HashMap<HashType, String> =
-                std::collections::HashMap::new();
-
-            for btc in byz_blocks.into_iter() {
-                match btc {
-                    BlockOrTipCut::Block(b) => {
-                        // Rare in DAG path, but include if present
-                        blocks_for_app.push(b);
-                    }
-                    BlockOrTipCut::TipCut(tc) => {
-                        let tipcut = tc.tipcut.clone();
-                        match self.dag_fetch_and_sort_tipcut(&tipcut).await {
-                            Ok((mut sorted_blocks, origin_map)) => {
-                                for (k, v) in origin_map.into_iter() {
-                                    origin_map_total.entry(k).or_insert(v);
-                                }
-                                blocks_for_app.append(&mut sorted_blocks);
-                                // Update per-lane last committed sequence
-                                for car in &tipcut.tips {
-                                    self.last_lane_seq.insert(car.origin_node.clone(), car.n);
-                                }
-                            }
-                            Err(e) => {
-                                warn!("DAG byz-commit: failed to fetch/sort tip cut: {:?}", e);
-                            }
-                        }
-                    }
-                }
+            // Reuse cached exec batches; build payload for [old_bci, new_bci]
+            let (blocks_for_app, origin_map_total, consumed_batches) =
+                self.dag_build_payload_from_cache(old_bci, new_bci);
+            if blocks_for_app.is_empty() {
+                warn!("[DAG STAGING] byz_commit_empty_payload: old_bci={} new_bci={} consumed_batches={}", old_bci, new_bci, consumed_batches);
+            } else {
+                debug!(
+                    "[DAG STAGING] byz_commit_send: blocks={} origins={} consumed_batches={}",
+                    blocks_for_app.len(),
+                    origin_map_total.len(),
+                    consumed_batches
+                );
             }
 
             let _ = self
@@ -1279,6 +1264,10 @@ impl Staging {
             .logserver_tx
             .send(LogServerCommand::UpdateBCI(self.bci))
             .await;
+
+        // GC exec batches cache
+        #[cfg(feature = "dag")]
+        self.dag_gc_exec_batches_up_to(self.bci);
     }
 
     fn maybe_update_last_qc(&mut self, qc: &ProtoQuorumCertificate) {
