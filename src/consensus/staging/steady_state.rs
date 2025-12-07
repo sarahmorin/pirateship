@@ -980,6 +980,9 @@ impl Staging {
                         }
                     }
                     Err(e) => {
+                        // FIXME: We can get caught in a loop here if we get blocked fetching a missing block.
+                        // I have a potential fix stashed locally, but I can't replicate the issue easily to test right now.
+                        // For now, just log and skip.
                         warn!("DAG crash-commit: failed to fetch/sort tip cut: {:?}", e);
                     }
                 }
