@@ -761,34 +761,25 @@ impl LogServer {
 
     #[cfg(feature = "dag")]
     async fn handle_new_tipcut(&mut self, tipcut: CachedTipCut) {
-        // In DAG mode, store tip cuts instead of blocks
-        info!(
-            "Storing tip cut with {} CARs (digest: {:?})",
-            tipcut.tipcut.tips.len(),
-            hex::encode(&tipcut.tipcut_hash[..8])
-        );
-
-        // Verify parent relationship if not the first tip cut
-        if !self.log.is_empty() {
-            let last_tipcut = self.log.back().unwrap();
-            if tipcut.tipcut.parent != last_tipcut.tipcut_hash {
-                error!(
-                    "Tip cut parent mismatch: expected {:?}, got {:?}",
-                    hex::encode(&last_tipcut.tipcut_hash[..8]),
-                    hex::encode(&tipcut.tipcut.parent[..8])
-                );
-                return;
-            }
-        } else {
-            // First tip cut should have genesis parent (all zeros)
-            if !tipcut.tipcut.parent.iter().all(|&b| b == 0) {
-                error!("First tip cut should have genesis parent");
-                return;
-            }
+        let last_n = self.log.back().map_or(0, |tipcut| tipcut.tipcut.n);
+        if tipcut.tipcut.n != last_n + 1 {
+            error!(
+                "TipCut {} is not the next tipcut, last_n: {}",
+                tipcut.tipcut.n, last_n
+            );
+            return;
         }
 
-        // Persist before pushing to in-memory log
-        let _ = self.storage.put_tipcut(&tipcut).await;
+        if last_n > 0
+            && !tipcut
+                .tipcut
+                .parent
+                .eq(&self.log.back().unwrap().tipcut_hash)
+        {
+            error!("Parent hash mismatch for tipcut {}", tipcut.tipcut.n);
+            return;
+        }
+
         self.log.push_back(tipcut);
     }
 
