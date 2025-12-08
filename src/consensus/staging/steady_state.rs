@@ -12,7 +12,7 @@ use crate::{
         logserver::LogServerCommand,
         pacemaker::PacemakerCommand,
     },
-    crypto::{CachedBlock, CachedTipCut, HashType},
+    crypto::{CachedBlock, HashType},
     proto::{
         consensus::{
             proto_block::Sig, ProtoNameWithSignature, ProtoQuorumCertificate,
@@ -25,7 +25,7 @@ use crate::{
 };
 
 #[cfg(feature = "dag")]
-use crate::consensus::dag::lane_staging;
+use crate::{consensus::dag::lane_staging, crypto::CachedTipCut};
 
 use super::{
     super::{
@@ -935,7 +935,7 @@ impl Staging {
                 .map(|e| match &e.block_or_tc {
                     BlockOrTipCut::Block(b) => b.clone(),
                     _ => {
-                        warn!("Found committed tip cut during crash commit");
+                        unreachable!("Found committed tip cut during crash commit");
                     }
                 })
                 .collect::<Vec<_>>();

@@ -1082,6 +1082,7 @@ impl CryptoServiceConnector {
         )
     }
 
+    #[cfg(feature = "dag")]
     pub async fn prepare_lane(
         &mut self,
         mut part: Vec<HalfSerializedBlock>,

@@ -352,79 +352,130 @@ impl Staging {
     async fn worker(&mut self) -> Result<(), ()> {
         let i_am_leader = self.i_am_leader();
 
-        #[cfg(feature = "extra_2pc")]
-        tokio::select! {
-            _tick = self.view_change_timer.wait() => {
-                self.handle_view_change_timer_tick().await?;
-            },
-            // DAG: process one lane cache event per iteration
-            // #[cfg(feature = "dag")]
-            lane_cache = self.lane_cache_rx.recv() => {
-                match lane_cache {
-                    Some((lane_id, block)) => {
-                        debug!("[DAG STAGING] lane_cache_event: lane={} n={} txs={}", lane_id, block.block.n, block.block.tx_list.len());
-                        self.cache_insert_block(&lane_id, &block);
+        #[cfg(not(feature = "dag"))]
+        {
+            #[cfg(feature = "extra_2pc")]
+            tokio::select! {
+                _tick = self.view_change_timer.wait() => {
+                    self.handle_view_change_timer_tick().await?;
+                },
+                // DAG: process one lane cache event per iteration
+                // #[cfg(feature = "dag")]
+                lane_cache = self.lane_cache_rx.recv() => {
+                    match lane_cache {
+                        Some((lane_id, block)) => {
+                            debug!("[DAG STAGING] lane_cache_event: lane={} n={} txs={}", lane_id, block.block.n, block.block.tx_list.len());
+                            self.cache_insert_block(&lane_id, &block);
+                        }
+                        None => {
+                            warn!("[DAG STAGING] lane_cache_channel_closed");
+                            return Err(())
+                        }
                     }
-                    None => {
-                        warn!("[DAG STAGING] lane_cache_channel_closed");
+                },
+                msg = self.block_rx.recv() => {
+                    if msg.is_none() {
                         return Err(())
                     }
-                }
-            },
-            msg = self.block_rx.recv() => {
-                if msg.is_none() {
-                    return Err(())
-                }
-                let proposal = msg.unwrap();
-                if i_am_leader {
-                    self.process_btc_as_leader(
-                        proposal.entry,
-                        proposal.storage_ack,
-                        proposal.ae_stats,
-                        proposal.this_is_final
-                    ).await?;
-                } else {
-                    self.process_btc_as_follower(
-                        proposal.entry,
-                        proposal.storage_ack,
-                        proposal.ae_stats,
-                        proposal.this_is_final
-                    ).await?;
-                }
-            },
-            vote = self.vote_rx.recv() => {
-                if vote.is_none() {
-                    return Err(())
-                }
-                let vote = vote.unwrap();
-                if i_am_leader {
-                    let (sender_name, _) = vote.0.to_name_and_sub_id();
-                    self.verify_and_process_vote(sender_name, vote.1).await?;
-                } else {
-                    warn!("Received vote while being a follower");
-                }
-            },
-            cmd = self.pacemaker_rx.recv() => {
-                if cmd.is_none() {
-                    return Err(())
-                }
-                let cmd = cmd.unwrap();
-                self.process_view_change_message(cmd).await?;
-            },
+                    let proposal = msg.unwrap();
+                    if i_am_leader {
+                        self.process_btc_as_leader(
+                            proposal.entry,
+                            proposal.storage_ack,
+                            proposal.ae_stats,
+                            proposal.this_is_final
+                        ).await?;
+                    } else {
+                        self.process_btc_as_follower(
+                            proposal.entry,
+                            proposal.storage_ack,
+                            proposal.ae_stats,
+                            proposal.this_is_final
+                        ).await?;
+                    }
+                },
+                vote = self.vote_rx.recv() => {
+                    if vote.is_none() {
+                        return Err(())
+                    }
+                    let vote = vote.unwrap();
+                    if i_am_leader {
+                        let (sender_name, _) = vote.0.to_name_and_sub_id();
+                        self.verify_and_process_vote(sender_name, vote.1).await?;
+                    } else {
+                        warn!("Received vote while being a follower");
+                    }
+                },
+                cmd = self.pacemaker_rx.recv() => {
+                    if cmd.is_none() {
+                        return Err(())
+                    }
+                    let cmd = cmd.unwrap();
+                    self.process_view_change_message(cmd).await?;
+                },
 
-            two_pc_fut = self.engraft_2pc_futures_rx.recv() => {
-                if two_pc_fut.is_none() {
-                    error!("2PC future is none");
-                    return Ok(())
-                }
-                trace!("Processing 2PC future");
-                let cmd = two_pc_fut.unwrap();
+                two_pc_fut = self.engraft_2pc_futures_rx.recv() => {
+                    if two_pc_fut.is_none() {
+                        error!("2PC future is none");
+                        return Ok(())
+                    }
+                    trace!("Processing 2PC future");
+                    let cmd = two_pc_fut.unwrap();
 
-                self.process_2pc_result(cmd).await?;
-            },
+                    self.process_2pc_result(cmd).await?;
+                },
+            }
+
+            #[cfg(not(feature = "extra_2pc"))]
+            tokio::select! {
+                _tick = self.view_change_timer.wait() => {
+                    self.handle_view_change_timer_tick().await?;
+                },
+                msg = self.block_rx.recv() => {
+                    if msg.is_none() {
+                        return Err(())
+                    }
+                    let proposal = msg.unwrap();
+                    if i_am_leader {
+                        self.process_btc_as_leader(
+                            proposal.entry,
+                            proposal.storage_ack,
+                            proposal.ae_stats,
+                            proposal.this_is_final
+                        ).await?;
+                    } else {
+                        self.process_btc_as_follower(
+                            proposal.entry,
+                            proposal.storage_ack,
+                            proposal.ae_stats,
+                            proposal.this_is_final
+                        ).await?;
+                    }
+                },
+                vote = self.vote_rx.recv() => {
+                    if vote.is_none() {
+                        return Err(())
+                    }
+                    let vote = vote.unwrap();
+                    if i_am_leader {
+                        let (sender_name, _) = vote.0.to_name_and_sub_id();
+                        self.verify_and_process_vote(sender_name, vote.1).await?;
+                    } else {
+                        warn!("Received vote while being a follower");
+                    }
+                },
+                cmd = self.pacemaker_rx.recv() => {
+                    if cmd.is_none() {
+                        return Err(())
+                    }
+                    let cmd = cmd.unwrap();
+                    self.process_view_change_message(cmd).await?;
+                },
+            }
         }
 
-        #[cfg(not(feature = "extra_2pc"))]
+        // FIXME: No extra 2pc on dag mode right now
+        #[cfg(feature = "dag")]
         tokio::select! {
             _tick = self.view_change_timer.wait() => {
                 self.handle_view_change_timer_tick().await?;
