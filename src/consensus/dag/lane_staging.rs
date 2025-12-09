@@ -129,6 +129,9 @@ pub struct LaneStaging {
 
     // Child CARs awaiting their parent CAR (keyed by (lane_id, parent_n))
     pending_children_by_parent: HashMap<(String, u64), Vec<ProtoBlockCar>>,
+
+    // CARs received before their blocks (keyed by (lane_id, n)), to avoid hanging on GetBlock
+    pending_cars_by_block: HashMap<(String, u64), Vec<(ProtoBlockCar, SenderType)>>,
 }
 
 impl LaneStaging {
@@ -172,6 +175,7 @@ impl LaneStaging {
             lane_logserver_query_tx,
             lane_cache_tx,
             pending_children_by_parent: HashMap::new(),
+            pending_cars_by_block: HashMap::new(),
         }
     }
 
@@ -189,7 +193,7 @@ impl LaneStaging {
 
     async fn worker(&mut self) -> Result<(), ()> {
         tokio::select! {
-            // biased;
+            biased;
             block = self.block_rx.recv() => {
                 if let Some((block, storage_ack, stats, _this_is_final_block)) = block {
                     self.process_block(block, storage_ack, stats).await?;
@@ -324,6 +328,22 @@ impl LaneStaging {
 
                 // Send acknowledgment to other nodes
                 self.send_block_ack(&block, &lane_id).await?;
+
+                // Drain any CARs that arrived before this block and process them now
+                let key = (lane_id.clone(), seq_num);
+                if let Some(mut queued) = self.pending_cars_by_block.remove(&key) {
+                    debug!(
+                        "[DAG LANE STAGING] processing_queued_cars_for_block: lane={} n={} queued_count={}",
+                        lane_id,
+                        seq_num,
+                        queued.len()
+                    );
+                    for (car, sender) in queued.drain(..) {
+                        // Re-run the usual remote CAR processing path
+                        // Ignore errors to ensure we continue draining
+                        let _ = self.process_remote_car(car, sender).await;
+                    }
+                }
             }
             Ok(Err(e)) => {
                 warn!(
@@ -907,22 +927,18 @@ impl LaneStaging {
             (have_block, max_seq_we_have)
         }; // borrow dropped
 
-        // If missing block: try GetBlock from LaneLogServer; if still missing, then backfill
+        // If missing block: queue CAR locally to avoid hanging on GetBlock/backfill and return
         if !have_block {
-            let fetched = self.ensure_block_in_memory(lane_id, car.n).await.is_some();
-            if !fetched {
-                let last_index_needed = if max_seq_we_have + 1 < car.n {
-                    max_seq_we_have.saturating_add(1)
-                } else {
-                    car.n.saturating_sub(100)
-                };
-                debug!(
-                    "[DAG LANE STAGING] Missing block for remote CAR lane {} seq {} (max local seq {}), requesting backfill from {}",
-                    lane_id, car.n, max_seq_we_have, sender_name
-                );
-                self.request_lane_backfill_for_car(lane_id, &sender_name, &car, last_index_needed)
-                    .await?;
-            }
+            // TODO: Maybe send a backfill request here too
+            debug!(
+                "[DAG LANE STAGING] queue_car_missing_block: lane={} n={} from={} max_local_seq={}",
+                lane_id, car.n, sender_name, max_seq_we_have
+            );
+            self.pending_cars_by_block
+                .entry((lane_id.clone(), car.n))
+                .or_insert_with(Vec::new)
+                .push((car.clone(), sender.clone()));
+            return Ok(());
         }
 
         // Verify block now exists and digest matches
