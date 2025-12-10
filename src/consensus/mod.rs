@@ -217,6 +217,21 @@ impl ServerContextType for PinnedConsensusServerContext {
             crate::proto::rpc::proto_payload::Message::AppendBlocks(proto_append_blocks) => {
                 #[cfg(feature = "dag")]
                 {
+                    // Forward any piggybacked CARs to LaneStaging before processing blocks
+                    if !proto_append_blocks.cars.is_empty() {
+                        let (sender_name, _) = sender.to_name_and_sub_id();
+                        for car in &proto_append_blocks.cars {
+                            // Send with original sender context
+                            self.car_tx
+                                .send((car.clone(), sender.clone()))
+                                .await
+                                .expect("Channel send error");
+                            debug!(
+                                "Forwarded piggyback CAR lane={} n={} from {}",
+                                car.origin_node, car.n, sender_name
+                            );
+                        }
+                    }
                     if proto_append_blocks.is_backfill_response {
                         // Extract sender name for lane identification
                         let (sender_name, _) = sender.to_name_and_sub_id();
@@ -575,6 +590,9 @@ impl<E: AppEngine + Send + Sync> ConsensusNode<E> {
         let (dag_block_ack_tx, dag_block_ack_rx) = make_channel(_chan_depth);
         #[cfg(feature = "dag")]
         let (dag_car_tx, dag_car_rx) = make_channel(_chan_depth);
+        // DAG: piggyback channel for locally formed CARs from LaneStaging to DagBlockBroadcaster
+        #[cfg(feature = "dag")]
+        let (dag_piggyback_car_tx, dag_piggyback_car_rx) = make_channel(_chan_depth);
         #[cfg(feature = "dag")]
         let (lane_staging_query_tx, lane_staging_query_rx) = make_channel(_chan_depth);
         // DAG Lane LogServer (dissemination - DAG)
@@ -694,6 +712,8 @@ impl<E: AppEngine + Send + Sync> ConsensusNode<E> {
             lane_staging_tx,
             dag_block_receiver_command_tx.clone(),
             app_tx.clone(),
+            // New: receive piggyback CARs
+            dag_piggyback_car_rx,
         );
 
         // DAG Block Receiver
@@ -724,6 +744,8 @@ impl<E: AppEngine + Send + Sync> ConsensusNode<E> {
             lane_logserver_tx,
             lane_logserver_query_tx.clone(),
             lane_cache_tx,
+            // New: send piggyback CARs to broadcaster
+            dag_piggyback_car_tx,
         );
 
         // DAG Lane LogServer

@@ -461,6 +461,7 @@ impl LaneLogServer {
                             view_is_stable: ab.view_is_stable,
                             config_num: ab.config_num,
                             is_backfill_response: true,
+                            cars: vec![],
                         }),
                     },
                 )),

@@ -449,6 +449,7 @@ impl BlockReceiver {
                         view_is_stable: blocks.view_is_stable,
                         config_num: blocks.config_num,
                         is_backfill_response: false,
+                        cars: vec![],
                     }),
                 },
             )),

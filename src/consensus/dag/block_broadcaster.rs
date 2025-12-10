@@ -32,7 +32,7 @@ use crate::{
     consensus::BlockOrTipCut,
     crypto::{CachedBlock, CryptoServiceConnector},
     proto::{
-        consensus::{HalfSerializedBlock, ProtoAppendBlocks},
+        consensus::{HalfSerializedBlock, ProtoAppendBlocks, ProtoBlockCar},
         rpc::ProtoPayload,
     },
     rpc::{client::PinnedClient, server::LatencyProfile, PinnedMessage, SenderType},
@@ -81,6 +81,10 @@ pub struct DagBlockBroadcaster {
     // Command ports
     block_receiver_command_tx: Sender<BlockReceiverCommand>,
     app_command_tx: Sender<AppCommand>,
+    // Piggyback: receive newly formed CARs to include in outgoing AppendBlocks
+    piggyback_car_rx: Receiver<ProtoBlockCar>,
+    // Local queue of CARs to piggyback
+    pending_cars: Vec<ProtoBlockCar>,
 
     // Perf Counters
     my_block_perf_counter: RefCell<PerfCounter<u64>>,
@@ -103,6 +107,7 @@ impl DagBlockBroadcaster {
         )>,
         block_receiver_command_tx: Sender<BlockReceiverCommand>,
         app_command_tx: Sender<AppCommand>,
+        piggyback_car_rx: Receiver<ProtoBlockCar>,
     ) -> Self {
         let my_block_event_order = vec![
             "Retrieve prepared block",
@@ -131,6 +136,8 @@ impl DagBlockBroadcaster {
             lane_staging_tx,
             block_receiver_command_tx,
             app_command_tx,
+            piggyback_car_rx,
+            pending_cars: Vec::new(),
             my_block_perf_counter,
         }
     }
@@ -223,6 +230,16 @@ impl DagBlockBroadcaster {
                     warn!("DAG Block Broadcaster control channel closed; continuing without control commands");
                 }
             },
+
+            // New: receive locally formed CARs to piggyback in future AppendBlocks
+            car = self.piggyback_car_rx.recv() => {
+                if let Some(car) = car {
+                    self.pending_cars.push(car);
+                    trace!("[DAG-DISSEMINATION] Queued piggyback CAR; pending_cars={}", self.pending_cars.len());
+                } else {
+                    warn!("Piggyback CAR channel closed; continuing without piggybacking");
+                }
+            }
         }
 
         Ok(())
@@ -466,6 +483,7 @@ impl DagBlockBroadcaster {
         config_num: u64,
         perf_entry: Option<u64>,
     ) {
+        // Piggyback CARs are accumulated in the worker loop into pending_cars
         let (should_perf, perf_entry) = match perf_entry {
             Some(e) => (true, e),
             None => (false, 0),
@@ -482,6 +500,8 @@ impl DagBlockBroadcaster {
             })
             .collect();
 
+        let cars = self.pending_cars.drain(..).collect::<Vec<_>>();
+
         let append_blocks = ProtoAppendBlocks {
             serialized_blocks,
             commit_index: self.ci,
@@ -489,6 +509,7 @@ impl DagBlockBroadcaster {
             view_is_stable,
             config_num,
             is_backfill_response: false,
+            cars,
         };
 
         let rpc = ProtoPayload {

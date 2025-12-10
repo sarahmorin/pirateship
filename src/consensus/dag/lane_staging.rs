@@ -126,6 +126,8 @@ pub struct LaneStaging {
     lane_logserver_query_tx: Sender<LaneLogServerQuery>,
     // Send per-lane cache updates to Staging to avoid runtime queries
     lane_cache_tx: Sender<(String /* lane_id */, CachedBlock)>,
+    // Piggyback: send newly formed CARs to broadcaster to include in next AppendBlocks
+    piggyback_car_tx: Sender<ProtoBlockCar>,
 
     // Child CARs awaiting their parent CAR (keyed by (lane_id, parent_n))
     pending_children_by_parent: HashMap<(String, u64), Vec<ProtoBlockCar>>,
@@ -152,6 +154,7 @@ impl LaneStaging {
         lane_logserver_tx: Sender<LaneLogServerCommand>,
         lane_logserver_query_tx: Sender<LaneLogServerQuery>,
         lane_cache_tx: Sender<(String, CachedBlock)>,
+        piggyback_car_tx: Sender<ProtoBlockCar>,
     ) -> Self {
         Self {
             config,
@@ -174,6 +177,7 @@ impl LaneStaging {
             lane_logserver_tx,
             lane_logserver_query_tx,
             lane_cache_tx,
+            piggyback_car_tx,
             pending_children_by_parent: HashMap::new(),
             pending_cars_by_block: HashMap::new(),
         }
@@ -693,10 +697,20 @@ impl LaneStaging {
             );
         }
 
-        // Broadcast the CAR to all nodes
-        self.broadcast_car(car.clone()).await?;
+        // Piggyback: queue CAR for inclusion in next AppendBlocks instead of broadcasting directly
+        if let Err(e) = self.piggyback_car_tx.send(car.clone()).await {
+            warn!(
+                "[DAG LANE STAGING] piggyback_car_send_fail: lane={} n={} err={:?}",
+                lane_id, seq_num, e
+            );
+        } else {
+            debug!(
+                "[DAG LANE STAGING] piggyback_car_enqueue_ok: lane={} n={}",
+                lane_id, seq_num
+            );
+        }
 
-        // Mark as broadcasted
+        // Mark as broadcasted (piggybacked)
         {
             if let Some(lane) = self.lane_blocks.get_mut(lane_id) {
                 if let Some(stored_block) = lane.get_mut(&seq_num) {
@@ -1276,6 +1290,7 @@ impl LaneStaging {
             view_is_stable: false,       // Unknown; not required for backfill
             config_num: self.config_num, // Best-effort
             is_backfill_response: false,
+            cars: vec![],
         };
 
         let abl = crate::proto::consensus::ProtoAppendBlockLane {
