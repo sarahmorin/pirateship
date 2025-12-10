@@ -33,11 +33,13 @@ pub enum ClientReplyCommand {
     #[cfg(feature = "dag")]
     CrashCommitAckWithOrigins(
         HashMap<HashType, (u64, Vec<ProtoTransactionResult>, String)>, /* hash -> (block_n, results, origin_node) */
+        bool, /* i_am_leader (should I forward?) */
     ),
     ByzCommitAck(HashMap<HashType, (u64, Vec<ProtoByzResponse>)>),
     #[cfg(feature = "dag")]
     ByzCommitAckWithOrigins(
         HashMap<HashType, (u64, Vec<ProtoByzResponse>, String)>, /* hash -> (block_n, responses, origin_node) */
+        bool, /* i_am_leader (should I forward?) */
     ),
     UnloggedRequestAck(oneshot::Receiver<ProtoTransactionResult>, MsgAckChanWithTag),
     ProbeRequestAck(u64 /* block_n */, MsgAckChanWithTag),
@@ -515,21 +517,30 @@ impl ClientReplyHandler {
                 self.maybe_clear_probe_buf().await;
             }
             #[cfg(feature = "dag")]
-            ClientReplyCommand::CrashCommitAckWithOrigins(crash_commit_ack_with_origins) => {
+            ClientReplyCommand::CrashCommitAckWithOrigins(
+                crash_commit_ack_with_origins,
+                i_am_leader,
+            ) => {
                 debug!(
                     "[DAG CLIENT] CrashCommitAckWithOrigins: {} entries",
                     crash_commit_ack_with_origins.len()
                 );
-                self.handle_crash_commit_ack_with_origins(crash_commit_ack_with_origins)
-                    .await;
+                self.handle_crash_commit_ack_with_origins(
+                    crash_commit_ack_with_origins,
+                    i_am_leader,
+                )
+                .await;
             }
             #[cfg(feature = "dag")]
-            ClientReplyCommand::ByzCommitAckWithOrigins(byz_commit_ack_with_origins) => {
+            ClientReplyCommand::ByzCommitAckWithOrigins(
+                byz_commit_ack_with_origins,
+                i_am_leader,
+            ) => {
                 debug!(
                     "[DAG CLIENT] ByzCommitAckWithOrigins: {} entries",
                     byz_commit_ack_with_origins.len()
                 );
-                self.handle_byz_commit_ack_with_origins(byz_commit_ack_with_origins)
+                self.handle_byz_commit_ack_with_origins(byz_commit_ack_with_origins, i_am_leader)
                     .await;
             }
         }
@@ -609,6 +620,7 @@ impl ClientReplyHandler {
             HashType,
             (u64, Vec<ProtoTransactionResult>, String),
         >,
+        i_am_leader: bool,
     ) {
         let my_name = self.config.get().net_config.name.clone();
 
@@ -632,7 +644,7 @@ impl ClientReplyHandler {
                     );
                     self.crash_commit_reply_buf.insert(hash, (n, reply_vec));
                 }
-            } else {
+            } else if i_am_leader {
                 // Forward to origin node
                 debug!(
                     "[DAG CLIENT] origin miss: forwarding execution results for {:?} (n={}) to {}",
@@ -642,6 +654,14 @@ impl ClientReplyHandler {
                 );
                 self.forward_results_to_origin(hash, n, reply_vec, origin_node)
                     .await;
+            } else {
+                // Not origin and not leader - do nothing
+                debug!(
+                    "[DAG CLIENT] origin miss: not leader, ignoring execution results for {:?} (n={}) to {}",
+                    hex::encode(&hash),
+                    n,
+                    origin_node
+                );
             }
         }
     }
@@ -652,6 +672,7 @@ impl ClientReplyHandler {
     async fn handle_byz_commit_ack_with_origins(
         &mut self,
         byz_commit_ack_with_origins: HashMap<HashType, (u64, Vec<ProtoByzResponse>, String)>,
+        i_am_leader: bool,
     ) {
         use crate::proto::consensus::ProtoByzResults;
         use crate::proto::rpc::proto_payload;
@@ -678,7 +699,7 @@ impl ClientReplyHandler {
                     );
                     self.byz_commit_reply_buf.insert(hash, (n, reply_vec));
                 }
-            } else {
+            } else if i_am_leader {
                 // Forward to origin node (convert ProtoByzResponse to ProtoTransactionResult)
                 // Forward byzantine responses to origin node to attach locally to receipts
                 debug!("[DAG CLIENT] origin miss: forwarding byz results for {:?} (n={}) to {} ({} responses)", hex::encode(&hash), n, origin_node, reply_vec.len());
@@ -707,6 +728,14 @@ impl ClientReplyHandler {
                         origin_node, e
                     );
                 }
+            } else {
+                // Not origin and not leader - do nothing
+                debug!(
+                    "[DAG CLIENT] origin miss: not leader, ignoring byz results for {:?} (n={}) to {}",
+                    hex::encode(&hash),
+                    n,
+                    origin_node
+                );
             }
         }
     }

@@ -411,7 +411,7 @@ impl<'a, E: AppEngine + Send + Sync + 'a> Application<'a, E> {
 
                 self.stats.total_requests += length as u64;
 
-                if is_my_lane && self.stats.lane_stats.last_n % 1000 == 0 {
+                if is_my_lane && self.stats.lane_stats.last_n % 100 == 0 {
                     // This is necessary for manual sanity checks.
                     self.stats.print_lane();
                 }
@@ -528,6 +528,7 @@ impl<'a, E: AppEngine + Send + Sync + 'a> Application<'a, E> {
                 self.client_reply_tx
                     .send(ClientReplyCommand::CrashCommitAckWithOrigins(
                         result_map_with_origins,
+                        self.stats.i_am_leader,
                     ))
                     .await
                     .unwrap();
@@ -613,6 +614,7 @@ impl<'a, E: AppEngine + Send + Sync + 'a> Application<'a, E> {
                 self.client_reply_tx
                     .send(ClientReplyCommand::ByzCommitAckWithOrigins(
                         result_map_with_origins,
+                        self.stats.i_am_leader,
                     ))
                     .await
                     .unwrap();
