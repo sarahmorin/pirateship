@@ -22,4 +22,11 @@ __pycache__
 
 **/deployment_artifacts/
 
+# Experiment results and logs
+cloudlab_*/
+**/build/
+**/jobs/
+**/results/
+test.img
+
 latencies.txt
