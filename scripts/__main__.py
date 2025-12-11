@@ -3,6 +3,7 @@ import multiprocessing
 import shutil
 from time import sleep
 import time
+import traceback
 from typing import List
 import tomli
 import click
@@ -113,7 +114,7 @@ def parse_config(path, workdir=None, existing_experiments=None):
     pprint(toml_dict)
 
     if workdir is None:
-        curr_time = datetime.datetime.now(datetime.timezone.utc).isoformat()
+        curr_time = datetime.datetime.now(datetime.timezone.utc).isoformat().replace(':', '-')
         workdir = os.path.join(toml_dict["workdir"], curr_time)
 
     deployment = Deployment(toml_dict["deployment_config"], workdir)
@@ -158,7 +159,7 @@ def parse_config(path, workdir=None, existing_experiments=None):
 
                 experiments.append(klass(
                     os.path.join(_e['name'], str(i + seq_start)),
-                    _e['name'], # Group name
+                    _e.get("group_name", _e['name']), # Group name
                     i + seq_start, # Seq num
                     int(_e["repeats"]),
                     int(_e["duration"]),
@@ -177,7 +178,7 @@ def parse_config(path, workdir=None, existing_experiments=None):
             seq_start = int(e.get("seq_start", 0))
             experiments.append(klass(
                 os.path.join(e['name'], str(seq_start)),
-                e["name"],  # Group name
+                e.get("group_name", e["name"]),  # Group name
                 seq_start, # Seq num
                 int(e["repeats"]),
                 int(e["duration"]),
@@ -242,6 +243,7 @@ def all(config, workdir):
             cached_build_cmd = build_cmd
         except Exception as e:
             print(f"Error deploying {experiment.name}. Continuing anyway: {e} {os.getcwd()}")
+            #traceback.print_exc()
             cached_git_hash = ""
             cached_diff = ""
             cached_build_cmd = ""

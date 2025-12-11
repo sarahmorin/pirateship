@@ -12,7 +12,8 @@ from ssh_utils import run_remote_public_ip, copy_remote_public_ip
 
 class AppExperiment(Experiment):
     def copy_back_build_files(self):
-        remote_repo = f"/home/{self.dev_ssh_user}/repo"
+        # CloudLab uses /users instead of /home
+        remote_repo = f"/users/{self.dev_ssh_user}/repo"
         TARGET_BINARIES = [self.workload]
 
         # Copy the target/release to build directory
@@ -29,7 +30,8 @@ class AppExperiment(Experiment):
 
     def bins_already_exist(self):
         TARGET_BINARIES = [self.workload]
-        remote_repo = f"/home/{self.dev_ssh_user}/repo"
+        # CloudLab uses /users instead of /home
+        remote_repo = f"/users/{self.dev_ssh_user}/repo"
 
         remote_script_dir = f"{remote_repo}/scripts_v2/loadtest"
         TARGET_SCRIPTS = ["load.py", "locustfile.py", "docker-compose.yml", "toggle.py", "shamir.py", "zipfian.py"]

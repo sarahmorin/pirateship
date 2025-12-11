@@ -1,5 +1,6 @@
 from copy import deepcopy
 import os
+import platform
 from pprint import pprint
 import pickle
 import json
@@ -67,10 +68,12 @@ class Deployment:
 
         self.ssh_user = config["ssh_user"]
 
-        if os.path.isabs(config["ssh_key"]):
-            self.ssh_key = config["ssh_key"]
+        # Expand ~ in ssh_key path
+        ssh_key_path = os.path.expanduser(config["ssh_key"])
+        if os.path.isabs(ssh_key_path):
+            self.ssh_key = ssh_key_path
         else:
-            self.ssh_key = os.path.join(workdir, "deployment", config["ssh_key"])
+            self.ssh_key = os.path.join(workdir, "deployment", ssh_key_path)
         self.node_port_base = int(config["node_port_base"])
 
         self.parse_custom_layouts()
@@ -123,8 +126,9 @@ class Deployment:
             raise FileNotFoundError("Dev VM setup scripts not found")
         
         # Copy the scripts to the dev VM
-        copy_remote_public_ip(os.path.join(found_path, "__prepare-dev-env.sh"), f"/home/{self.ssh_user}/__prepare-dev-env.sh", self.ssh_user, self.ssh_key, self.dev_vm)
-        copy_remote_public_ip(os.path.join(found_path, "ideal_bashrc"), f"/home/{self.ssh_user}/ideal_bashrc", self.ssh_user, self.ssh_key, self.dev_vm)
+        # CloudLab uses /users instead of /home
+        copy_remote_public_ip(os.path.join(found_path, "__prepare-dev-env.sh"), f"/users/{self.ssh_user}/__prepare-dev-env.sh", self.ssh_user, self.ssh_key, self.dev_vm)
+        copy_remote_public_ip(os.path.join(found_path, "ideal_bashrc"), f"/users/{self.ssh_user}/ideal_bashrc", self.ssh_user, self.ssh_key, self.dev_vm)
 
         # Run the scripts
         run_remote_public_ip([
@@ -142,16 +146,16 @@ class Deployment:
         with open(self.ssh_key, "w") as f:
             f.write(private_key)
 
-        run_local([
-            "chmod 600 " + self.ssh_key
-        ])
+        # chmod only works on Unix systems
+        if platform.system() != "Windows":
+            run_local([
+                "chmod 600 " + self.ssh_key
+            ])
 
 
     def deploy(self):
-        run_local([
-            f"mkdir -p {self.workdir}",
-            f"mkdir -p {self.workdir}/deployment",
-        ])
+        os.makedirs(self.workdir, exist_ok=True)
+        os.makedirs(os.path.join(self.workdir, "deployment"), exist_ok=True)
         with open(os.path.join(self.workdir, "deployment", "deployment.txt"), "w") as f:
             pprint(self, f)
 
@@ -225,8 +229,9 @@ class Deployment:
                 f"mkdir -p {self.workdir}",
             ], self.ssh_user, self.ssh_key, node)
 
+        # CloudLab uses /users instead of /home, so use absolute path
         res = run_local([
-            f"rsync -avz -e 'ssh -o StrictHostKeyChecking=no -i {self.ssh_key}' {self.workdir}/* {self.ssh_user}@{node.public_ip}:~/{self.workdir}/"
+            f"rsync -avz -e 'ssh -o StrictHostKeyChecking=no -i {self.ssh_key}' {self.workdir}/* {self.ssh_user}@{node.public_ip}:/users/{self.ssh_user}/{self.workdir}/"
             for node in nodelist
         ], hide=True, asynchronous=True)
 
@@ -235,8 +240,9 @@ class Deployment:
 
     def sync_local_to_dev_vm(self):
         # Use rsync to copy workdir from dev VM to local
+        # CloudLab uses /users instead of /home, so use absolute path
         run_local([
-            f"rsync -avz -e 'ssh -o StrictHostKeyChecking=no -i {self.ssh_key}' {self.ssh_user}@{self.dev_vm.public_ip}:~/{self.workdir}/* {self.workdir}/"
+            f"rsync -avz -e 'ssh -o StrictHostKeyChecking=no -i {self.ssh_key}' {self.ssh_user}@{self.dev_vm.public_ip}:/users/{self.ssh_user}/{self.workdir}/* {self.workdir}/"
         ], hide=False)
 
     def clean_dev_vm(self):

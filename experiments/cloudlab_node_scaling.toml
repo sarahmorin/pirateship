@@ -1,0 +1,190 @@
+workdir = "cloudlab_node_scaling"
+project_home = "https://github.com/sarahmorin/pirateship"
+
+[deployment_config]
+mode = "manual"
+ssh_key = "~/.ssh/id_ed25519"
+ssh_user = "nurzhana"
+node_port_base = 3000
+
+# CloudLab node list - 9 consensus nodes + 1 client node
+[deployment_config.node_list]
+
+[deployment_config.node_list.clientpool_vm0]
+private_ip = "10.10.1.1"
+public_ip = "hp182.utah.cloudlab.us"
+tee_type = "nontee"
+region_id = 0
+
+[deployment_config.node_list.nodepool_vm0]
+private_ip = "10.10.1.2"
+public_ip = "hp113.utah.cloudlab.us"
+tee_type = "nontee"
+region_id = 0
+
+[deployment_config.node_list.nodepool_vm1]
+private_ip = "10.10.1.3"
+public_ip = "hp161.utah.cloudlab.us"
+tee_type = "nontee"
+region_id = 0
+
+[deployment_config.node_list.nodepool_vm2]
+private_ip = "10.10.1.4"
+public_ip = "hp171.utah.cloudlab.us"
+tee_type = "nontee"
+region_id = 0
+
+[deployment_config.node_list.nodepool_vm3]
+private_ip = "10.10.1.5"
+public_ip = "hp083.utah.cloudlab.us"
+tee_type = "nontee"
+region_id = 0
+
+[deployment_config.node_list.nodepool_vm4]
+private_ip = "10.10.1.6"
+public_ip = "hp087.utah.cloudlab.us"
+tee_type = "nontee"
+region_id = 0
+
+[deployment_config.node_list.nodepool_vm5]
+private_ip = "10.10.1.7"
+public_ip = "hp103.utah.cloudlab.us"
+tee_type = "nontee"
+region_id = 0
+
+[deployment_config.node_list.nodepool_vm6]
+private_ip = "10.10.1.8"
+public_ip = "hp169.utah.cloudlab.us"
+tee_type = "nontee"
+region_id = 0
+
+[deployment_config.node_list.nodepool_vm7]
+private_ip = "10.10.1.9"
+public_ip = "hp196.utah.cloudlab.us"
+tee_type = "nontee"
+region_id = 0
+
+[deployment_config.node_list.nodepool_vm8]
+private_ip = "10.10.1.10"
+public_ip = "hp115.utah.cloudlab.us"
+tee_type = "nontee"
+region_id = 0
+
+[node_config]
+
+[node_config.net_config]
+client_max_retry = 10
+
+[node_config.rpc_config]
+recv_buffer_size = 32768
+channel_depth = 1000
+
+[node_config.consensus_config]
+commit_index_gap_soft = 250
+commit_index_gap_hard = 500
+liveness_u = 2
+max_backlog_batch_size = 1000
+signature_max_delay_blocks = 50
+signature_max_delay_ms = 102
+num_crypto_workers = 5
+view_timeout_ms = 4000
+batch_max_delay_ms = 2
+
+[node_config.consensus_config.log_storage_config.RocksDB]
+write_buffer_size = 2147483648
+max_write_buffer_number = 1
+max_write_buffers_to_merge = 1
+
+[node_config.app_config]
+logger_stats_report_ms = 100
+checkpoint_interval_ms = 60000
+
+[node_config.evil_config]
+simulate_byzantine_behavior = false
+byzantine_start_block = 0
+
+[client_config]
+full_duplex = true
+client_sub_id = 0
+
+[client_config.net_config]
+client_max_retry = 10
+
+[client_config.workload_config]
+request_config = "Blanks"
+max_concurrent_requests = 16
+
+# Node scaling experiment: 4-9 nodes with fixed 600 clients
+[[experiments]]
+name = "node_scaling_4"
+repeats = 1
+num_nodes = 4
+num_clients = 600
+node_distribution = "uniform"
+build_command = "make"
+duration = 60
+
+[[experiments]]
+name = "node_scaling_5"
+repeats = 1
+num_nodes = 5
+num_clients = 600
+node_distribution = "uniform"
+build_command = "make"
+duration = 60
+
+[[experiments]]
+name = "node_scaling_6"
+repeats = 1
+num_nodes = 6
+num_clients = 600
+node_distribution = "uniform"
+build_command = "make"
+duration = 60
+
+[[experiments]]
+name = "node_scaling_7"
+repeats = 1
+num_nodes = 7
+num_clients = 600
+node_distribution = "uniform"
+build_command = "make"
+duration = 60
+
+[[experiments]]
+name = "node_scaling_8"
+repeats = 1
+num_nodes = 8
+num_clients = 600
+node_distribution = "uniform"
+build_command = "make"
+duration = 60
+
+[[experiments]]
+name = "node_scaling_9"
+repeats = 1
+num_nodes = 9
+num_clients = 600
+node_distribution = "uniform"
+build_command = "make"
+duration = 60
+
+# Results configuration
+[[results]]
+name = "node_scaling_results"
+plotter = "tput_latency_sweep"
+ramp_up = 10
+ramp_down = 10
+output = "node_scaling.pdf"
+force_parse = true
+
+[results.legends]
+node_scaling_4 = "4 nodes"
+node_scaling_5 = "5 nodes"
+node_scaling_6 = "6 nodes"
+node_scaling_7 = "7 nodes"
+node_scaling_8 = "8 nodes"
+node_scaling_9 = "9 nodes"
+
+[results.font]
+size = 55

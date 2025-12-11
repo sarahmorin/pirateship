@@ -4,7 +4,7 @@ from copy import deepcopy
 from dataclasses import dataclass
 import os
 import pickle
-from typing import Callable, Dict, List, OrderedDict, Tuple
+from typing import Callable, Dict, List, OrderedDict, Tuple, Optional
 
 from experiments import Experiment
 from collections import defaultdict
@@ -23,7 +23,8 @@ plt.rc('font',**{'size': 100, 'family':'serif','serif':['Linux Libertine O']})
 # plt.rc('lines', linewidth=0.5)
 matplotlib.rcParams['ps.useafm'] = True
 matplotlib.rcParams['pdf.use14corefonts'] = True
-matplotlib.rcParams['text.usetex'] = True
+# Disable LaTeX rendering if latex is not installed
+matplotlib.rcParams['text.usetex'] = False
 # matplotlib.rcParams["text.latex.preview"] = True
 matplotlib.rcParams['text.latex.preamble'] = r"""
 \usepackage{libertine}
@@ -225,7 +226,7 @@ class Result:
         except:
             pass
 
-    def process_experiment(self, experiment, ramp_up, ramp_down, byz, tput_scale=1000.0, latency_scale=1000.0) -> Stats | None:
+    def process_experiment(self, experiment, ramp_up, ramp_down, byz, tput_scale=1000.0, latency_scale=1000.0) -> Optional[Stats]:
         tputs = []
         tputs_unbatched = []
         latencies = []
@@ -233,8 +234,17 @@ class Result:
         for repeat_num in range(experiment.repeats):
             log_dir = os.path.join(experiment.local_workdir, "logs", str(repeat_num))
             # Find the first node log file and all client log files in log_dir
-            node_log_files = list(sorted([f for f in os.listdir(log_dir) if f.startswith("node") and f.endswith(".log")]))
-            client_log_files = [f for f in os.listdir(log_dir) if f.startswith("client") and f.endswith(".log")]
+            try:
+                node_log_files = list(sorted([f for f in os.listdir(log_dir) if f.startswith("node") and f.endswith(".log")]))
+                client_log_files = [f for f in os.listdir(log_dir) if f.startswith("client") and f.endswith(".log")]
+            except FileNotFoundError:
+                print(f"Warning: Log directory {log_dir} not found, skipping repeat {repeat_num}")
+                continue
+            
+            # Skip if no logs exist
+            if len(node_log_files) == 0:
+                print(f"Warning: No node logs found in {log_dir}, skipping repeat {repeat_num}")
+                continue
 
             self.parse_node_logs(log_dir, node_log_files, duration, ramp_up, ramp_down, tputs, tputs_unbatched, byz=byz)
             self.parse_client_logs(log_dir, client_log_files, duration, ramp_up, ramp_down, latencies, byz=byz)
@@ -300,7 +310,7 @@ class Result:
         return ret
 
 
-    def process_autobahn_experiment(self, experiment, ramp_up, ramp_down, byz, tput_scale=1000.0, latency_scale=1.0) -> Stats | None:
+    def process_autobahn_experiment(self, experiment, ramp_up, ramp_down, byz, tput_scale=1000.0, latency_scale=1.0) -> Optional[Stats]:
         """
         For autobahn, we only take the first repeat.
         """
@@ -592,7 +602,7 @@ class Result:
                     axes[ycoord, xcoord].set_ylim(ylim)
 
 
-    def tput_latency_sweep_plot(self, plot_dict: Dict[str, List[Stats]], output: str | None):
+    def tput_latency_sweep_plot(self, plot_dict: Dict[str, List[Stats]], output: Optional[str]):
         # Find how many subfigures we need.
 
         bounding_boxes = {
@@ -874,7 +884,7 @@ class Result:
     def stacked_bar_graph_parse(self, ramp_up, ramp_down, legends) -> OrderedDict[str, List[Stats]]:
         return collections.OrderedDict(self.tput_latency_sweep_parse(ramp_up, ramp_down, legends))
     
-    def stacked_bar_graph_plot(self, plot_dict: OrderedDict[str, List[Stats]], output: str | None, xlabels: List[str]):
+    def stacked_bar_graph_plot(self, plot_dict: OrderedDict[str, List[Stats]], output: Optional[str], xlabels: List[str]):
         # Assumption: xlabels are in the same order as the subexperiments in each group
         plot_matrix = np.zeros((len(xlabels), len(plot_dict))) # Rows are xlabels, columns are legends
         stdev_matrix = np.zeros((len(xlabels), len(plot_dict))) # Rows are xlabels, columns are legends
@@ -913,7 +923,8 @@ class Result:
         matplotlib.rc("axes.formatter", limits=(-99, 99))
         matplotlib.rcParams['ps.useafm'] = True
         matplotlib.rcParams['pdf.use14corefonts'] = True
-        matplotlib.rcParams['text.usetex'] = True
+        # Disable LaTeX rendering if latex is not installed
+        matplotlib.rcParams['text.usetex'] = False
         # matplotlib.rcParams["text.latex.preview"] = True
         matplotlib.rcParams['text.latex.preamble'] = r"""
         \usepackage{libertine}

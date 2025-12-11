@@ -1,0 +1,118 @@
+workdir = "cloudlab_setup_test"
+project_home = "https://github.com/sarahmorin/pirateship"
+
+
+[deployment_config]
+mode = "manual"
+ssh_key = "~/.ssh/id_ed25519"
+ssh_user = "nurzhana"
+node_port_base = 3000
+
+# =============================================================================
+# CLOUDLAB NODES
+# =============================================================================
+[deployment_config.node_list]
+
+[deployment_config.node_list.nodepool_vm0]
+private_ip = "10.10.1.1"
+public_ip = "hp182.utah.cloudlab.us"
+tee_type = "nontee"
+region_id = 0
+
+[deployment_config.node_list.nodepool_vm1]
+private_ip = "10.10.1.2"
+public_ip = "hp113.utah.cloudlab.us"
+tee_type = "nontee"
+region_id = 0
+
+[deployment_config.node_list.nodepool_vm2]
+private_ip = "10.10.1.3"
+public_ip = "hp161.utah.cloudlab.us"
+tee_type = "nontee"
+region_id = 0
+
+[deployment_config.node_list.clientpool_vm0]
+private_ip = "10.10.1.4"
+public_ip = "hp171.utah.cloudlab.us"
+tee_type = "nontee"
+region_id = 0
+
+# =============================================================================
+# NODE CONFIGURATION
+# =============================================================================
+[node_config]
+
+[node_config.net_config]
+client_max_retry = 10
+
+[node_config.rpc_config]
+recv_buffer_size = 32768
+channel_depth = 1000
+
+[node_config.consensus_config]
+commit_index_gap_soft = 250
+commit_index_gap_hard = 500
+liveness_u = 1
+max_backlog_batch_size = 1000
+signature_max_delay_blocks = 50
+signature_max_delay_ms = 102
+num_crypto_workers = 4
+view_timeout_ms = 4000
+batch_max_delay_ms = 2
+
+[node_config.consensus_config.log_storage_config.RocksDB]
+db_path = "/tmp/testdb"
+write_buffer_size = 536870912
+max_write_buffer_number = 1
+max_write_buffers_to_merge = 1
+
+[node_config.app_config]
+logger_stats_report_ms = 100
+checkpoint_interval_ms = 60000
+
+[node_config.evil_config]
+simulate_byzantine_behavior = false
+byzantine_start_block = 0
+
+# =============================================================================
+# CLIENT CONFIGURATION
+# =============================================================================
+[client_config]
+full_duplex = true
+client_sub_id = 0
+
+[client_config.net_config]
+client_max_retry = 10
+
+[client_config.workload_config]
+request_config = "Blanks"
+max_concurrent_requests = 16
+
+# =============================================================================
+# EXPERIMENT
+# =============================================================================
+[[experiments]]
+name = "setup_test"
+repeats = 1
+num_nodes = 3
+num_clients = 50
+node_distribution = "uniform"
+build_command = "make"
+duration = 30
+
+# =============================================================================
+# RESULTS
+# =============================================================================
+[[results]]
+name = "setup_results"
+plotter = "tput_latency_sweep"
+ramp_up = 5
+ramp_down = 5
+output = "setup_test.pdf"
+force_parse = true
+
+[results.legends]
+setup_test = "Setup Test"
+
+[results.font]
+size = 55

@@ -1,0 +1,126 @@
+workdir = "cloudlab_scaling_experiment"
+project_home = "https://github.com/sarahmorin/pirateship"
+
+[deployment_config]
+mode = "manual"
+ssh_key = "~/.ssh/id_ed25519"
+ssh_user = "nurzhana"
+node_port_base = 3000
+
+# CloudLab node list - 6 consensus nodes + 1 client node
+[deployment_config.node_list]
+
+[deployment_config.node_list.nodepool_vm0]
+private_ip = "10.10.1.1"
+public_ip = "hp177.utah.cloudlab.us"
+tee_type = "nontee"
+region_id = 0
+
+[deployment_config.node_list.nodepool_vm1]
+private_ip = "10.10.1.2"
+public_ip = "hp166.utah.cloudlab.us"
+tee_type = "nontee"
+region_id = 0
+
+[deployment_config.node_list.nodepool_vm2]
+private_ip = "10.10.1.3"
+public_ip = "hp066.utah.cloudlab.us"
+tee_type = "nontee"
+region_id = 0
+
+[deployment_config.node_list.nodepool_vm3]
+private_ip = "10.10.1.4"
+public_ip = "hp169.utah.cloudlab.us"
+tee_type = "nontee"
+region_id = 0
+
+[deployment_config.node_list.nodepool_vm4]
+private_ip = "10.10.1.5"
+public_ip = "hp188.utah.cloudlab.us"
+tee_type = "nontee"
+region_id = 0
+
+[deployment_config.node_list.nodepool_vm5]
+private_ip = "10.10.1.6"
+public_ip = "hp048.utah.cloudlab.us"
+tee_type = "nontee"
+region_id = 0
+
+[deployment_config.node_list.clientpool_vm0]
+private_ip = "10.10.1.7"
+public_ip = "hp054.utah.cloudlab.us"
+tee_type = "nontee"
+region_id = 0
+
+[node_config]
+
+[node_config.net_config]
+client_max_retry = 10
+
+[node_config.rpc_config]
+recv_buffer_size = 32768
+channel_depth = 1000
+
+[node_config.consensus_config]
+commit_index_gap_soft = 250
+commit_index_gap_hard = 500
+liveness_u = 2
+max_backlog_batch_size = 1000
+signature_max_delay_blocks = 50
+signature_max_delay_ms = 102
+num_crypto_workers = 5
+view_timeout_ms = 4000
+batch_max_delay_ms = 2
+
+[node_config.consensus_config.log_storage_config.RocksDB]
+write_buffer_size = 2147483648
+max_write_buffer_number = 1
+max_write_buffers_to_merge = 1
+
+[node_config.app_config]
+logger_stats_report_ms = 100
+checkpoint_interval_ms = 60000
+
+[node_config.evil_config]
+simulate_byzantine_behavior = false
+byzantine_start_block = 0
+
+[client_config]
+full_duplex = true
+client_sub_id = 0
+
+[client_config.net_config]
+client_max_retry = 10
+
+[client_config.workload_config]
+request_config = "Blanks"
+max_concurrent_requests = 16
+
+# 6-node client saturation sweep to find optimal load for leader bottleneck demonstration
+[[experiments]]
+name = "6node_client_sweep"
+repeats = 1
+num_nodes = 6
+node_distribution = "uniform"
+build_command = "make"
+duration = 60
+
+[experiments.sweeping_parameters]
+# Test client counts to find where 6-node leader saturates
+# Expected: 450-700 clients based on 4-node saturation at 300-500
+num_clients = [400, 500, 600, 700]
+
+# Results configuration
+[[results]]
+name = "tput_latency_6node_sweep"
+plotter = "tput_latency_sweep"
+ramp_up = 10
+ramp_down = 10
+output = "6node_client_sweep.pdf"
+force_parse = true
+
+[results.legends]
+6node_client_sweep = "PirateShip (6 nodes)"
+
+[results.font]
+size = 55

@@ -1,0 +1,112 @@
+workdir = "cloudlab_autobahn_sweep"
+project_home = "https://github.com/sarahmorin/pirateship"
+
+[deployment_config]
+mode = "manual"
+ssh_key = "~/.ssh/id_ed25519"
+ssh_user = "nurzhana"
+node_port_base = 3000
+
+# CloudLab node list - verified private IPs
+[deployment_config.node_list]
+
+[deployment_config.node_list.nodepool_vm0]
+private_ip = "10.10.1.1"
+public_ip = "apt033.apt.emulab.net"
+tee_type = "nontee"
+region_id = 0
+
+[deployment_config.node_list.nodepool_vm1]
+private_ip = "10.10.1.2"
+public_ip = "apt031.apt.emulab.net"
+tee_type = "nontee"
+region_id = 0
+
+[deployment_config.node_list.nodepool_vm2]
+private_ip = "10.10.1.3"
+public_ip = "apt056.apt.emulab.net"
+tee_type = "nontee"
+region_id = 0
+
+[deployment_config.node_list.clientpool_vm0]
+private_ip = "10.10.1.4"
+public_ip = "apt034.apt.emulab.net"
+tee_type = "nontee"
+region_id = 0
+
+[node_config]
+# Autobahn node parameters (primary + worker configuration)
+# Based on autobahn/benchmark defaults - tuned for consensus performance
+timeout_delay = 1000           # ms - Primary timeout for consensus
+header_size = 32               # bytes - Preferred header size (batch metadata)
+max_header_delay = 200         # ms - Max delay before creating new header
+gc_depth = 50                  # rounds - Garbage collection depth
+sync_retry_delay = 1000        # ms - Delay before retrying sync requests
+sync_retry_nodes = 4           # number - How many nodes to sync with
+batch_size = 500_000           # bytes (500KB) - Worker batch size
+max_batch_delay = 10           # ms - Max delay before sealing batch
+use_optimistic_tips = false    # Disable optimistic consensus tips
+use_parallel_proposals = true  # Enable parallel proposal processing
+k = 1                          # Consensus parameter
+use_fast_path = true           # Enable fast path optimization
+fast_path_timeout = 200        # ms - Fast path timeout
+use_ride_share = false         # Disable ride-share optimization
+car_timeout = 2000             # ms - Car timeout for batching
+use_fast_sync = true           # Enable fast synchronization
+use_exponential_timeouts = true # Enable exponential backoff
+
+# Fault injection (disabled for baseline)
+simulate_asynchrony = false
+asynchrony_type = []
+asynchrony_start = []
+asynchrony_duration = []
+affected_nodes = []
+egress_penalty = 0
+
+[client_config]
+# Autobahn client/benchmark parameters
+# Note: In Autobahn, clients submit to worker transaction ports
+faults = 0                     # Number of faulty nodes to simulate
+workers = 1                    # Workers per node (affects parallelism)
+tx_size = 512                  # Transaction size in bytes
+duration = 60                  # Experiment duration in seconds
+
+# Partition simulation (unused for baseline)
+simulate_partition = false
+partition_start = 160
+partition_duration = 0
+partition_nodes = 0
+
+[[experiments]]
+name = "autobahn_baseline"
+type = "autobahn"
+repeats = 1
+num_nodes = 3
+node_distribution = "uniform"
+build_command = "cd autobahn && cargo build --release --features benchmark"
+duration = 60
+seq_start = 1
+client_region = -1  # Use all available client VMs
+
+# Client sweep: Autobahn expects aggregate rate across all clients
+# Unlike PirateShip (which counts individual clients), Autobahn's num_clients
+# is the total transaction rate distributed across workers
+# For fair comparison with PirateShip's 25-250 client sweep:
+# - Each PirateShip client submits ~1000-2000 tx/s
+# - So 25 clients ≈ 25,000-50,000 tx/s aggregate
+[experiments.sweeping_parameters]
+num_clients = [25_000, 50_000, 100_000, 150_000, 200_000, 250_000]
+
+[[results]]
+name = "autobahn_tput_latency_sweep"
+plotter = "tput_latency_sweep"
+ramp_up = 15
+ramp_down = 15
+output = "cloudlab_autobahn_sweep.pdf"
+force_parse = true
+
+[results.legends]
+autobahn_baseline = "Autobahn (CloudLab)"
+
+[results.font]
+size = 55

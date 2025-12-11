@@ -1,0 +1,183 @@
+workdir = "cloudlab_latency_throughput"
+project_home = "https://github.com/sarahmorin/pirateship"
+
+[deployment_config]
+mode = "manual"
+ssh_key = "~/.ssh/id_ed25519"
+ssh_user = "nurzhana"
+node_port_base = 3000
+
+# CloudLab node list - 9 consensus nodes + 1 client node (updated)
+[deployment_config.node_list]
+
+[deployment_config.node_list.clientpool_vm0]
+private_ip = "10.10.1.1"
+public_ip = "hp119.utah.cloudlab.us"
+tee_type = "nontee"
+region_id = 0
+
+[deployment_config.node_list.nodepool_vm0]
+private_ip = "10.10.1.2"
+public_ip = "hp084.utah.cloudlab.us"
+tee_type = "nontee"
+region_id = 0
+
+[deployment_config.node_list.nodepool_vm1]
+private_ip = "10.10.1.3"
+public_ip = "hp081.utah.cloudlab.us"
+tee_type = "nontee"
+region_id = 0
+
+[deployment_config.node_list.nodepool_vm2]
+private_ip = "10.10.1.4"
+public_ip = "hp116.utah.cloudlab.us"
+tee_type = "nontee"
+region_id = 0
+
+[deployment_config.node_list.nodepool_vm3]
+private_ip = "10.10.1.5"
+public_ip = "hp102.utah.cloudlab.us"
+tee_type = "nontee"
+region_id = 0
+
+[deployment_config.node_list.nodepool_vm4]
+private_ip = "10.10.1.6"
+public_ip = "hp106.utah.cloudlab.us"
+tee_type = "nontee"
+region_id = 0
+
+[deployment_config.node_list.nodepool_vm5]
+private_ip = "10.10.1.7"
+public_ip = "hp107.utah.cloudlab.us"
+tee_type = "nontee"
+region_id = 0
+
+[deployment_config.node_list.nodepool_vm6]
+private_ip = "10.10.1.8"
+public_ip = "hp105.utah.cloudlab.us"
+tee_type = "nontee"
+region_id = 0
+
+[deployment_config.node_list.nodepool_vm7]
+private_ip = "10.10.1.9"
+public_ip = "hp088.utah.cloudlab.us"
+tee_type = "nontee"
+region_id = 0
+
+[deployment_config.node_list.nodepool_vm8]
+private_ip = "10.10.1.10"
+public_ip = "hp118.utah.cloudlab.us"
+tee_type = "nontee"
+region_id = 0
+
+[node_config]
+
+[node_config.net_config]
+client_max_retry = 10
+
+[node_config.rpc_config]
+recv_buffer_size = 32768
+channel_depth = 1000
+
+[node_config.consensus_config]
+commit_index_gap_soft = 250
+commit_index_gap_hard = 500
+liveness_u = 2
+max_backlog_batch_size = 1000
+signature_max_delay_blocks = 50
+signature_max_delay_ms = 102
+num_crypto_workers = 5
+view_timeout_ms = 4000
+batch_max_delay_ms = 2
+
+[node_config.consensus_config.log_storage_config.RocksDB]
+write_buffer_size = 2147483648
+max_write_buffer_number = 1
+max_write_buffers_to_merge = 1
+
+[node_config.app_config]
+logger_stats_report_ms = 100
+checkpoint_interval_ms = 60000
+
+[node_config.evil_config]
+simulate_byzantine_behavior = false
+byzantine_start_block = 0
+
+[client_config]
+full_duplex = true
+client_sub_id = 0
+
+[client_config.net_config]
+client_max_retry = 10
+
+[client_config.workload_config]
+request_config = "Blanks"
+max_concurrent_requests = 16
+
+# Experiments (7-node focus, with one comparison at 5 nodes)
+[[experiments]]
+name = "pship_sig1_n7"
+group_name = "pirateship_sig1"
+repeats = 1
+num_nodes = 7
+num_clients = 600
+node_distribution = "uniform"
+build_command = "make"
+duration = 60
+[experiments.node_config.consensus_config]
+signature_max_delay_blocks = 1
+
+[[experiments]]
+name = "pship_sig10_n7"
+group_name = "pirateship_sig10"
+repeats = 1
+num_nodes = 7
+num_clients = 600
+node_distribution = "uniform"
+build_command = "make"
+duration = 60
+[experiments.node_config.consensus_config]
+signature_max_delay_blocks = 10
+
+[[experiments]]
+name = "sraft_n7"
+group_name = "signed_raft_n7"
+repeats = 1
+num_nodes = 7
+num_clients = 600
+node_distribution = "uniform"
+build_command = "make signed_raft_logger"
+duration = 60
+
+[[experiments]]
+name = "sraft_n5"
+group_name = "signed_raft_n5"
+repeats = 1
+num_nodes = 5
+num_clients = 600
+node_distribution = "uniform"
+build_command = "make signed_raft_logger"
+duration = 60
+
+# Results: latency vs throughput scatter (README-style)
+[[results]]
+name = "latency_throughput_readme_style"
+plotter = "tput_latency_sweep"
+ramp_up = 10
+ramp_down = 10
+output = "latency_throughput_readme_style.pdf"
+force_parse = true
+
+[results.legends]
+pirateship_sig1 = "PirateShip (sig=1)"
+pirateship_sig10 = "PirateShip (sig=10)"
+signed_raft_n7 = "Signed Raft (n=7)"
+signed_raft_n5 = "Signed Raft (n=5)"
+
+[results.font]
+size = 55
+
+
+
+
+
