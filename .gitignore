@@ -17,6 +17,8 @@ __pycache__
 *.tfstate
 
 .venv
+.venv-wsl/
+.venv-linux/
 *.ipynb
 *.pkl
 

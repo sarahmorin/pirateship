@@ -8,7 +8,7 @@ import time
 from time import sleep
 import tqdm
 import re
-from ssh_utils import *
+from .ssh_utils import *
 
 
 class Deployment:
@@ -229,9 +229,23 @@ class Deployment:
                 f"mkdir -p {self.workdir}",
             ], self.ssh_user, self.ssh_key, node)
 
+        # Avoid syncing huge artifacts to every node. Nodes only need configs/build/jobs to run.
+        # This keeps the copy phase fast even after many experiments have accumulated logs/results.
+        rsync_excludes = [
+            "--exclude='**/logs/**'",
+            "--exclude='**/results/**'",
+            "--exclude='**/*.pkl'",
+            "--exclude='**/diff.patch'",
+            "--exclude='**/git_hash.txt'",
+            "--exclude='**/source_tree.tar.gz'",
+            "--exclude='**/untracked_files.tar.gz'",
+            "--exclude='**/untracked_files.txt'",
+        ]
+        rsync_exclude_str = " ".join(rsync_excludes)
+
         # CloudLab uses /users instead of /home, so use absolute path
         res = run_local([
-            f"rsync -avz -e 'ssh -o StrictHostKeyChecking=no -i {self.ssh_key}' {self.workdir}/* {self.ssh_user}@{node.public_ip}:/users/{self.ssh_user}/{self.workdir}/"
+            f"rsync -avz {rsync_exclude_str} -e 'ssh -o StrictHostKeyChecking=no -i {self.ssh_key}' {self.workdir}/* {self.ssh_user}@{node.public_ip}:/users/{self.ssh_user}/{self.workdir}/"
             for node in nodelist
         ], hide=True, asynchronous=True)
 

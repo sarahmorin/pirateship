@@ -25,6 +25,8 @@ pub struct KVReadWriteYCSB {
 #[derive(Serialize, Deserialize, Clone, Debug)]
 pub enum RequestConfig {
     Blanks,
+    #[cfg(feature = "dag")]
+    BlanksDAG, // DAG workload with 512-byte random payloads
     KVReadWriteUniform(KVReadWriteUniform),
     KVReadWriteYCSB(KVReadWriteYCSB),
     MockSQL(),

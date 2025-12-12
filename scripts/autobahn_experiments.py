@@ -1,6 +1,6 @@
 from copy import deepcopy
 import json
-from experiments import Experiment, copy_file_from_remote_public_ip
+from .experiments import Experiment, copy_file_from_remote_public_ip
 import os
 import subprocess
 from typing import List
@@ -10,8 +10,8 @@ from typing import List
 from json import dump, load
 from collections import OrderedDict, defaultdict
 
-from deployment import Deployment
-from ssh_utils import run_remote_public_ip, copy_remote_public_ip
+from .deployment import Deployment
+from .ssh_utils import run_remote_public_ip, copy_remote_public_ip
 
 
 class ConfigError(Exception):

@@ -1,7 +1,20 @@
 from dataclasses import dataclass
-from deployment import Deployment
-from ssh_utils import run_local, run_remote_public_ip, copy_remote_public_ip, copy_file_from_remote_public_ip, copy_dir_from_remote_public_ip
-from crypto import gen_keys_and_certs, TLS_CERT_SUFFIX, TLS_PRIVKEY_SUFFIX, ROOT_CERT_SUFFIX, PUB_KEYLIST_NAME, SIGN_PRIVKEY_SUFFIX
+from .deployment import Deployment
+from .ssh_utils import (
+    run_local,
+    run_remote_public_ip,
+    copy_remote_public_ip,
+    copy_file_from_remote_public_ip,
+    copy_dir_from_remote_public_ip,
+)
+from .crypto import (
+    gen_keys_and_certs,
+    TLS_CERT_SUFFIX,
+    TLS_PRIVKEY_SUFFIX,
+    ROOT_CERT_SUFFIX,
+    PUB_KEYLIST_NAME,
+    SIGN_PRIVKEY_SUFFIX,
+)
 from copy import deepcopy
 from pprint import pprint
 import pickle
@@ -291,7 +304,7 @@ class Experiment:
             f"cd {remote_repo} && git checkout {git_hash}",
             f"cd {remote_repo} && git submodule update --init --recursive",
             f"cd {remote_repo} && git apply --reject --whitespace=fix diff.patch || true",  # Removed --allow-empty for old git, || true to continue if patch is empty
-        ]
+        )
         
         # Then build - source cargo env first
         cmds.append(

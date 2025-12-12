@@ -19,6 +19,11 @@ pub trait PerWorkerWorkloadGenerator: Send {
 mod blanks;
 pub use blanks::*;
 
+#[cfg(feature = "dag")]
+mod blanks_dag;
+#[cfg(feature = "dag")]
+pub use blanks_dag::BlankWorkloadGenerator as BlankDAGWorkloadGenerator;
+
 mod kv_uniform;
 pub use kv_uniform::*;
 

@@ -1,13 +1,13 @@
 from collections import defaultdict
 from copy import deepcopy
 import json
-from experiments import Experiment, copy_file_from_remote_public_ip
-from deployment import Deployment
+from .experiments import Experiment, copy_file_from_remote_public_ip
+from .deployment import Deployment
 import os
 import subprocess
 from typing import List
 
-from ssh_utils import run_remote_public_ip, copy_remote_public_ip
+from .ssh_utils import run_remote_public_ip, copy_remote_public_ip
 
 
 class AppExperiment(Experiment):

@@ -7,6 +7,8 @@ use pft::{
         workload_generators::{
             BlankWorkloadGenerator, KVReadWriteUniformGenerator, KVReadWriteYCSBGenerator,
             MockSQLGenerator, PerWorkerWorkloadGenerator,
+            #[cfg(feature = "dag")]
+            BlankDAGWorkloadGenerator,
         },
     },
     config::{default_log4rs_config, ClientConfig, RequestConfig},
@@ -73,6 +75,12 @@ async fn main() -> std::io::Result<()> {
         match config.workload_config.request_config {
             RequestConfig::Blanks => {
                 let generator = BlankWorkloadGenerator {};
+                let worker = ClientWorker::new(config, client, generator, id, _stat_tx);
+                ClientWorker::launch(worker, &mut client_handles).await;
+            }
+            #[cfg(feature = "dag")]
+            RequestConfig::BlanksDAG => {
+                let generator = BlankDAGWorkloadGenerator {};
                 let worker = ClientWorker::new(config, client, generator, id, _stat_tx);
                 ClientWorker::launch(worker, &mut client_handles).await;
             }
