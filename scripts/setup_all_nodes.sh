@@ -6,16 +6,16 @@ SSH_USER="nurzhana"
 
 # New 10-node CloudLab deployment
 NODES=(
-    "hp119.utah.cloudlab.us"
-    "hp084.utah.cloudlab.us"
-    "hp081.utah.cloudlab.us"
-    "hp116.utah.cloudlab.us"
-    "hp102.utah.cloudlab.us"
-    "hp106.utah.cloudlab.us"
-    "hp107.utah.cloudlab.us"
-    "hp105.utah.cloudlab.us"
-    "hp088.utah.cloudlab.us"
-    "hp118.utah.cloudlab.us"
+    "hp152.utah.cloudlab.us"
+    "hp144.utah.cloudlab.us"
+    "hp126.utah.cloudlab.us"
+    "hp147.utah.cloudlab.us"
+    "hp138.utah.cloudlab.us"
+    "hp125.utah.cloudlab.us"
+    "hp140.utah.cloudlab.us"
+    "hp159.utah.cloudlab.us"
+    "hp134.utah.cloudlab.us"
+    "hp158.utah.cloudlab.us"
 )
 
 echo "=========================================="
