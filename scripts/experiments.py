@@ -300,11 +300,17 @@ class Experiment:
 
         # Checkout the git hash and apply the diff 
         cmds = [
+            # IMPORTANT: remote repo may accumulate untracked files from earlier failed runs.
+            # Those can block checkout with:
+            #   "untracked working tree files would be overwritten by checkout"
+            # So we hard reset + clean BEFORE checkout.
             f"cd {remote_repo} && git reset --hard",
+            f"cd {remote_repo} && git clean -fdx",
             f"cd {remote_repo} && git checkout {git_hash}",
             f"cd {remote_repo} && git submodule update --init --recursive",
-            f"cd {remote_repo} && git apply --reject --whitespace=fix diff.patch || true",  # Removed --allow-empty for old git, || true to continue if patch is empty
-        )
+            # Only apply patch if it is non-empty. On a clean pushed branch, diff.patch should be empty.
+            f"cd {remote_repo} && if [ -s diff.patch ]; then git apply --reject --whitespace=fix diff.patch || true; fi",
+        ]
         
         # Then build - source cargo env first
         cmds.append(
