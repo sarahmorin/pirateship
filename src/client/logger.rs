@@ -6,7 +6,6 @@ use std::{
 };
 
 use log::info;
-use nix::libc::exit;
 
 use crate::utils::{channel::Receiver, timer::ResettableTimer};
 

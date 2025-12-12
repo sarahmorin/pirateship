@@ -7,8 +7,6 @@ use pft::{
         workload_generators::{
             BlankWorkloadGenerator, KVReadWriteUniformGenerator, KVReadWriteYCSBGenerator,
             MockSQLGenerator, PerWorkerWorkloadGenerator,
-            #[cfg(feature = "dag")]
-            BlankDAGWorkloadGenerator,
         },
     },
     config::{default_log4rs_config, ClientConfig, RequestConfig},
@@ -16,6 +14,9 @@ use pft::{
     rpc::client::{Client, PinnedClient},
     utils::channel::make_channel,
 };
+
+#[cfg(feature = "dag")]
+use pft::client::workload_generators::BlankDAGWorkloadGenerator;
 use tokio::{sync::Mutex, task::JoinSet};
 
 #[global_allocator]

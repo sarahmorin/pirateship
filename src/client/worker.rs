@@ -5,7 +5,6 @@ use std::{
 };
 
 use log::{debug, error, info, trace};
-use nix::libc::stat;
 use prost::Message as _;
 use tokio::{sync::oneshot::error, task::JoinSet, time::sleep};
 
