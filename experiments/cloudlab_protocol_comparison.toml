@@ -1,4 +1,4 @@
-workdir = "cloudlab_dag_pirateship_sweep_v2"
+workdir = "cloudlab_protocol_comparison"
 project_home = "https://github.com/sarahmorin/pirateship"
 
 [deployment_config]
@@ -77,7 +77,7 @@ commit_index_gap_soft = 250
 commit_index_gap_hard = 500
 liveness_u = 2
 max_backlog_batch_size = 1000
-signature_max_delay_blocks = 10
+signature_max_delay_blocks = 50
 signature_max_delay_ms = 102
 num_crypto_workers = 5
 view_timeout_ms = 4000
@@ -98,7 +98,7 @@ simulate_byzantine_behavior = false
 byzantine_start_block = 0
 
 # =============================================================================
-# CLIENT CONFIGURATION (DAG Workload)
+# CLIENT CONFIGURATION
 # =============================================================================
 [client_config]
 full_duplex = true
@@ -108,21 +108,22 @@ client_sub_id = 0
 client_max_retry = 10
 
 [client_config.workload_config]
-request_config = "BlanksDAG"  # DAG workload with 512-byte random payloads
-max_concurrent_requests = 32  # Higher concurrency for DAG
+request_config = "Blanks"
+max_concurrent_requests = 32  # Higher concurrency enables better batching
 
 # =============================================================================
-# EXPERIMENTS: DAG PirateShip Client Sweep
+# EXPERIMENTS: Protocol Comparison
+# PirateShip (sig=10 vs sig=50) vs Signed Raft
 # =============================================================================
 
-# DAG PirateShip with sig=10
+# PirateShip with sig=10 (balanced signing)
 [[experiments]]
-name = "dag_pirateship_sig10"
-group_name = "DAG PirateShip (sig=10)"
+name = "pirateship_sig10"
+group_name = "PirateShip (sig=10)"
 repeats = 1
 num_nodes = 7
 node_distribution = "uniform"
-build_command = "make dag_pirateship_logger"
+build_command = "make"
 duration = 60
 
 [experiments.node_config.consensus_config]
@@ -131,14 +132,14 @@ signature_max_delay_blocks = 10
 [experiments.sweeping_parameters]
 num_clients = [10, 50, 100, 200, 300, 400, 500]  # From baseline to saturation
 
-# DAG PirateShip with sig=50
+# PirateShip with sig=50 (less frequent signing)
 [[experiments]]
-name = "dag_pirateship_sig50"
-group_name = "DAG PirateShip (sig=50)"
+name = "pirateship_sig50"
+group_name = "PirateShip (sig=50)"
 repeats = 1
 num_nodes = 7
 node_distribution = "uniform"
-build_command = "make dag_pirateship_logger"
+build_command = "make"
 duration = 60
 
 [experiments.node_config.consensus_config]
@@ -147,20 +148,34 @@ signature_max_delay_blocks = 50
 [experiments.sweeping_parameters]
 num_clients = [10, 50, 100, 200, 300, 400, 500]  # From baseline to saturation
 
+# Signed Raft (5 nodes for f=2 tolerance)
+[[experiments]]
+name = "signed_raft"
+group_name = "Signed Raft"
+repeats = 1
+num_nodes = 5
+node_distribution = "uniform"
+build_command = "make signed_raft_logger"
+duration = 60
+
+[experiments.sweeping_parameters]
+num_clients = [10, 50, 100, 200, 300, 400, 500]  # From baseline to saturation
+
 # =============================================================================
 # RESULTS
 # =============================================================================
 [[results]]
-name = "dag_pirateship_sweep"
+name = "protocol_comparison"
 plotter = "tput_latency_sweep"
 ramp_up = 10
 ramp_down = 10
-output = "dag_pirateship_sweep.pdf"
+output = "protocol_comparison.pdf"
 force_parse = true
 
 [results.legends]
-"DAG PirateShip (sig=10)" = "DAG PirateShip (sig=10)"
-"DAG PirateShip (sig=50)" = "DAG PirateShip (sig=50)"
+"PirateShip (sig=10)" = "PirateShip (sig=10)"
+"PirateShip (sig=50)" = "PirateShip (sig=50)"
+"Signed Raft" = "Signed Raft"
 
 [results.font]
 size = 55

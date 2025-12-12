@@ -13,27 +13,27 @@ node_port_base = 3000
 # =============================================================================
 [deployment_config.node_list]
 
-[deployment_config.node_list.nodepool_vm0]
+[deployment_config.node_list.clientpool_vm0]
 private_ip = "10.10.1.1"
-public_ip = "hp182.utah.cloudlab.us"
+public_ip = "hp152.utah.cloudlab.us"
+tee_type = "nontee"
+region_id = 0
+
+[deployment_config.node_list.nodepool_vm0]
+private_ip = "10.10.1.2"
+public_ip = "hp144.utah.cloudlab.us"
 tee_type = "nontee"
 region_id = 0
 
 [deployment_config.node_list.nodepool_vm1]
-private_ip = "10.10.1.2"
-public_ip = "hp113.utah.cloudlab.us"
+private_ip = "10.10.1.3"
+public_ip = "hp126.utah.cloudlab.us"
 tee_type = "nontee"
 region_id = 0
 
 [deployment_config.node_list.nodepool_vm2]
-private_ip = "10.10.1.3"
-public_ip = "hp161.utah.cloudlab.us"
-tee_type = "nontee"
-region_id = 0
-
-[deployment_config.node_list.clientpool_vm0]
 private_ip = "10.10.1.4"
-public_ip = "hp171.utah.cloudlab.us"
+public_ip = "hp147.utah.cloudlab.us"
 tee_type = "nontee"
 region_id = 0
 

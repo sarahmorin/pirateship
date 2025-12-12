@@ -1,4 +1,4 @@
-workdir = "cloudlab_dag_pirateship_sweep_v2"
+workdir = "cloudlab_network_blip"
 project_home = "https://github.com/sarahmorin/pirateship"
 
 [deployment_config]
@@ -61,7 +61,7 @@ tee_type = "nontee"
 region_id = 0
 
 # =============================================================================
-# NODE CONFIGURATION
+# BASE NODE/CLIENT CONFIG
 # =============================================================================
 [node_config]
 
@@ -77,7 +77,7 @@ commit_index_gap_soft = 250
 commit_index_gap_hard = 500
 liveness_u = 2
 max_backlog_batch_size = 1000
-signature_max_delay_blocks = 10
+signature_max_delay_blocks = 50
 signature_max_delay_ms = 102
 num_crypto_workers = 5
 view_timeout_ms = 4000
@@ -97,9 +97,6 @@ checkpoint_interval_ms = 60000
 simulate_byzantine_behavior = false
 byzantine_start_block = 0
 
-# =============================================================================
-# CLIENT CONFIGURATION (DAG Workload)
-# =============================================================================
 [client_config]
 full_duplex = true
 client_sub_id = 0
@@ -108,60 +105,86 @@ client_sub_id = 0
 client_max_retry = 10
 
 [client_config.workload_config]
-request_config = "BlanksDAG"  # DAG workload with 512-byte random payloads
-max_concurrent_requests = 32  # Higher concurrency for DAG
+request_config = "Blanks"
+max_concurrent_requests = 32
 
 # =============================================================================
-# EXPERIMENTS: DAG PirateShip Client Sweep
+# EXPERIMENTS: network blip recovery / hangover
 # =============================================================================
 
-# DAG PirateShip with sig=10
+# Baseline Pirateship (non-DAG), with a 2s blip on a single follower (node4).
 [[experiments]]
-name = "dag_pirateship_sig10"
-group_name = "DAG PirateShip (sig=10)"
+name = "pirateship_blip"
+group_name = "PirateShip"
+type = "network_blip"
+repeats = 1
+num_nodes = 7
+node_distribution = "uniform"
+build_command = "make"
+duration = 90
+
+[[experiments.network_blips]]
+name = "blip_node4"
+start_s = 40
+duration_s = 2
+targets = ["node4"]
+
+[experiments.sweeping_parameters]
+num_clients = [400]
+
+# DAG Pirateship, same blip.
+[[experiments]]
+name = "dag_pirateship_blip"
+group_name = "DAG PirateShip"
+type = "network_blip"
 repeats = 1
 num_nodes = 7
 node_distribution = "uniform"
 build_command = "make dag_pirateship_logger"
-duration = 60
+duration = 90
 
-[experiments.node_config.consensus_config]
-signature_max_delay_blocks = 10
+[[experiments.network_blips]]
+name = "blip_node4"
+start_s = 40
+duration_s = 2
+targets = ["node4"]
 
-[experiments.sweeping_parameters]
-num_clients = [10, 50, 100, 200, 300, 400, 500]  # From baseline to saturation
+[experiments.node_config.dag_config]
+tip_cut_delay_ms = 100
+tip_cut_max_cars = 0
 
-# DAG PirateShip with sig=50
-[[experiments]]
-name = "dag_pirateship_sig50"
-group_name = "DAG PirateShip (sig=50)"
-repeats = 1
-num_nodes = 7
-node_distribution = "uniform"
-build_command = "make dag_pirateship_logger"
-duration = 60
-
-[experiments.node_config.consensus_config]
-signature_max_delay_blocks = 50
+[experiments.client_config.workload_config]
+request_config = "BlanksDAG"
 
 [experiments.sweeping_parameters]
-num_clients = [10, 50, 100, 200, 300, 400, 500]  # From baseline to saturation
+num_clients = [400]
 
 # =============================================================================
-# RESULTS
+# RESULTS: commit vs audit throughput time series with blip markers
 # =============================================================================
 [[results]]
-name = "dag_pirateship_sweep"
-plotter = "tput_latency_sweep"
+name = "network_blip_timeseries"
+plotter = "crash_byz_tput_timeseries"
 ramp_up = 10
 ramp_down = 10
-output = "dag_pirateship_sweep.pdf"
+output = "network_blip_timeseries.pdf"
 force_parse = true
-
-[results.legends]
-"DAG PirateShip (sig=10)" = "DAG PirateShip (sig=10)"
-"DAG PirateShip (sig=50)" = "DAG PirateShip (sig=50)"
+target_node = "node1"
+sample_rate = 10
 
 [results.font]
 size = 55
+
+[[results.events]]
+name = "blip_start"
+pattern = "\\[INFO\\]\\[pft::experiment::blip\\]\\[(.*)\\] NETBLIP START name=blip_node4"
+target = "node4"
+description = "Blip\\nstart"
+
+[[results.events]]
+name = "blip_end"
+pattern = "\\[INFO\\]\\[pft::experiment::blip\\]\\[(.*)\\] NETBLIP END name=blip_node4"
+target = "node4"
+description = "Blip\\nend"
+
 

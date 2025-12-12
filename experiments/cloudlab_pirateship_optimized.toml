@@ -1,4 +1,4 @@
-workdir = "cloudlab_dag_pirateship_sweep_v2"
+workdir = "cloudlab_pirateship_optimized"
 project_home = "https://github.com/sarahmorin/pirateship"
 
 [deployment_config]
@@ -61,7 +61,7 @@ tee_type = "nontee"
 region_id = 0
 
 # =============================================================================
-# NODE CONFIGURATION
+# NODE CONFIGURATION (Optimized like README)
 # =============================================================================
 [node_config]
 
@@ -77,7 +77,7 @@ commit_index_gap_soft = 250
 commit_index_gap_hard = 500
 liveness_u = 2
 max_backlog_batch_size = 1000
-signature_max_delay_blocks = 10
+signature_max_delay_blocks = 10  # More balanced (README likely uses 10, not 50)
 signature_max_delay_ms = 102
 num_crypto_workers = 5
 view_timeout_ms = 4000
@@ -98,7 +98,7 @@ simulate_byzantine_behavior = false
 byzantine_start_block = 0
 
 # =============================================================================
-# CLIENT CONFIGURATION (DAG Workload)
+# CLIENT CONFIGURATION (Optimized - 32 concurrent like README)
 # =============================================================================
 [client_config]
 full_duplex = true
@@ -108,59 +108,79 @@ client_sub_id = 0
 client_max_retry = 10
 
 [client_config.workload_config]
-request_config = "BlanksDAG"  # DAG workload with 512-byte random payloads
-max_concurrent_requests = 32  # Higher concurrency for DAG
+request_config = "Blanks"
+max_concurrent_requests = 32  # ← KEY DIFFERENCE: README uses 32, not 16!
 
 # =============================================================================
-# EXPERIMENTS: DAG PirateShip Client Sweep
+# EXPERIMENTS: Compare sig=1, sig=10, sig=50
 # =============================================================================
 
-# DAG PirateShip with sig=10
+# PirateShip with sig=1 (sign every block - most secure)
 [[experiments]]
-name = "dag_pirateship_sig10"
-group_name = "DAG PirateShip (sig=10)"
+name = "pirateship_sig1"
+group_name = "pship_sig1"
 repeats = 1
 num_nodes = 7
 node_distribution = "uniform"
-build_command = "make dag_pirateship_logger"
+build_command = "make"
 duration = 60
 
 [experiments.node_config.consensus_config]
-signature_max_delay_blocks = 10
+signature_max_delay_blocks = 1  # Sign every block
 
 [experiments.sweeping_parameters]
-num_clients = [10, 50, 100, 200, 300, 400, 500]  # From baseline to saturation
+# Optimal 6-point sweep with even 100-client spacing
+num_clients = [50, 150, 250, 350, 450, 550]
 
-# DAG PirateShip with sig=50
+# PirateShip with sig=10 (balanced - likely README default)
 [[experiments]]
-name = "dag_pirateship_sig50"
-group_name = "DAG PirateShip (sig=50)"
+name = "pirateship_sig10"
+group_name = "pship_sig10"
 repeats = 1
 num_nodes = 7
 node_distribution = "uniform"
-build_command = "make dag_pirateship_logger"
+build_command = "make"
 duration = 60
 
 [experiments.node_config.consensus_config]
-signature_max_delay_blocks = 50
+signature_max_delay_blocks = 10  # Sign every 10 blocks
 
 [experiments.sweeping_parameters]
-num_clients = [10, 50, 100, 200, 300, 400, 500]  # From baseline to saturation
+# Optimal 6-point sweep with even 100-client spacing
+num_clients = [50, 150, 250, 350, 450, 550]
+
+# PirateShip with sig=50 (your original - least frequent signing)
+[[experiments]]
+name = "pirateship_sig50"
+group_name = "pship_sig50"
+repeats = 1
+num_nodes = 7
+node_distribution = "uniform"
+build_command = "make"
+duration = 60
+
+[experiments.node_config.consensus_config]
+signature_max_delay_blocks = 50  # Sign every 50 blocks
+
+[experiments.sweeping_parameters]
+# Optimal 6-point sweep with even 100-client spacing
+num_clients = [50, 150, 250, 350, 450, 550]
 
 # =============================================================================
 # RESULTS
 # =============================================================================
 [[results]]
-name = "dag_pirateship_sweep"
+name = "signature_comparison"
 plotter = "tput_latency_sweep"
 ramp_up = 10
 ramp_down = 10
-output = "dag_pirateship_sweep.pdf"
+output = "pirateship_signature_comparison.pdf"
 force_parse = true
 
 [results.legends]
-"DAG PirateShip (sig=10)" = "DAG PirateShip (sig=10)"
-"DAG PirateShip (sig=50)" = "DAG PirateShip (sig=50)"
+pship_sig1 = "PirateShip (sig=1)"
+pship_sig10 = "PirateShip (sig=10)"
+pship_sig50 = "PirateShip (sig=50)"
 
 [results.font]
 size = 55

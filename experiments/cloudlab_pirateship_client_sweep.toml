@@ -1,4 +1,4 @@
-workdir = "cloudlab_dag_pirateship_sweep_v2"
+workdir = "cloudlab_pirateship_client_sweep"
 project_home = "https://github.com/sarahmorin/pirateship"
 
 [deployment_config]
@@ -8,7 +8,7 @@ ssh_user = "nurzhana"
 node_port_base = 3000
 
 # =============================================================================
-# CLOUDLAB NODES (7 nodes)
+# CLOUDLAB NODES (7 nodes for better throughput)
 # =============================================================================
 [deployment_config.node_list]
 
@@ -77,7 +77,7 @@ commit_index_gap_soft = 250
 commit_index_gap_hard = 500
 liveness_u = 2
 max_backlog_batch_size = 1000
-signature_max_delay_blocks = 10
+signature_max_delay_blocks = 50
 signature_max_delay_ms = 102
 num_crypto_workers = 5
 view_timeout_ms = 4000
@@ -98,7 +98,7 @@ simulate_byzantine_behavior = false
 byzantine_start_block = 0
 
 # =============================================================================
-# CLIENT CONFIGURATION (DAG Workload)
+# CLIENT CONFIGURATION
 # =============================================================================
 [client_config]
 full_duplex = true
@@ -108,59 +108,37 @@ client_sub_id = 0
 client_max_retry = 10
 
 [client_config.workload_config]
-request_config = "BlanksDAG"  # DAG workload with 512-byte random payloads
-max_concurrent_requests = 32  # Higher concurrency for DAG
+request_config = "Blanks"
+max_concurrent_requests = 16
 
 # =============================================================================
-# EXPERIMENTS: DAG PirateShip Client Sweep
+# EXPERIMENT: PirateShip Client Sweep
 # =============================================================================
-
-# DAG PirateShip with sig=10
 [[experiments]]
-name = "dag_pirateship_sig10"
-group_name = "DAG PirateShip (sig=10)"
+name = "pirateship_sweep"
 repeats = 1
 num_nodes = 7
 node_distribution = "uniform"
-build_command = "make dag_pirateship_logger"
+build_command = "make"
 duration = 60
 
-[experiments.node_config.consensus_config]
-signature_max_delay_blocks = 10
-
 [experiments.sweeping_parameters]
-num_clients = [10, 50, 100, 200, 300, 400, 500]  # From baseline to saturation
-
-# DAG PirateShip with sig=50
-[[experiments]]
-name = "dag_pirateship_sig50"
-group_name = "DAG PirateShip (sig=50)"
-repeats = 1
-num_nodes = 7
-node_distribution = "uniform"
-build_command = "make dag_pirateship_logger"
-duration = 60
-
-[experiments.node_config.consensus_config]
-signature_max_delay_blocks = 50
-
-[experiments.sweeping_parameters]
-num_clients = [10, 50, 100, 200, 300, 400, 500]  # From baseline to saturation
+# Optimal 6-point sweep with even 100-client spacing
+num_clients = [50, 150, 250, 350, 450, 550]
 
 # =============================================================================
 # RESULTS
 # =============================================================================
 [[results]]
-name = "dag_pirateship_sweep"
+name = "pirateship_saturation"
 plotter = "tput_latency_sweep"
 ramp_up = 10
 ramp_down = 10
-output = "dag_pirateship_sweep.pdf"
+output = "pirateship_client_sweep.pdf"
 force_parse = true
 
 [results.legends]
-"DAG PirateShip (sig=10)" = "DAG PirateShip (sig=10)"
-"DAG PirateShip (sig=50)" = "DAG PirateShip (sig=50)"
+pirateship_sweep = "PirateShip"
 
 [results.font]
 size = 55
