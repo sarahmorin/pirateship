@@ -1,20 +1,7 @@
 from dataclasses import dataclass
-from .deployment import Deployment
-from .ssh_utils import (
-    run_local,
-    run_remote_public_ip,
-    copy_remote_public_ip,
-    copy_file_from_remote_public_ip,
-    copy_dir_from_remote_public_ip,
-)
-from .crypto import (
-    gen_keys_and_certs,
-    TLS_CERT_SUFFIX,
-    TLS_PRIVKEY_SUFFIX,
-    ROOT_CERT_SUFFIX,
-    PUB_KEYLIST_NAME,
-    SIGN_PRIVKEY_SUFFIX,
-)
+from deployment import Deployment
+from ssh_utils import run_local, run_remote_public_ip, copy_remote_public_ip, copy_file_from_remote_public_ip, copy_dir_from_remote_public_ip
+from crypto import gen_keys_and_certs, TLS_CERT_SUFFIX, TLS_PRIVKEY_SUFFIX, ROOT_CERT_SUFFIX, PUB_KEYLIST_NAME, SIGN_PRIVKEY_SUFFIX
 from copy import deepcopy
 from pprint import pprint
 import pickle
@@ -158,6 +145,18 @@ class Experiment:
             # config["consensus_config"]["log_storage_config"]["RocksDB"]["db_path"] = f"{log_dir}/{name}-db"
             config["consensus_config"]["log_storage_config"]["RocksDB"]["db_path"] = f"/data/{name}-db"
 
+            if "app_config" not in config:
+                config["app_config"] = {
+                    "logger_stats_report_ms": 100,
+                    "checkpoint_interval_ms": 60000,
+                }
+
+            if "dag_config" not in config:
+                config["dag_config"] = {
+                    "tip_cut_delay_ms": 100,
+                    "tip_cut_max_cars": 10,
+                }
+
 
             node_configs[name] = config
 
@@ -300,16 +299,10 @@ class Experiment:
 
         # Checkout the git hash and apply the diff 
         cmds = [
-            # IMPORTANT: remote repo may accumulate untracked files from earlier failed runs.
-            # Those can block checkout with:
-            #   "untracked working tree files would be overwritten by checkout"
-            # So we hard reset + clean BEFORE checkout.
             f"cd {remote_repo} && git reset --hard",
-            f"cd {remote_repo} && git clean -fdx",
             f"cd {remote_repo} && git checkout {git_hash}",
             f"cd {remote_repo} && git submodule update --init --recursive",
-            # Only apply patch if it is non-empty. On a clean pushed branch, diff.patch should be empty.
-            f"cd {remote_repo} && if [ -s diff.patch ]; then git apply --reject --whitespace=fix diff.patch || true; fi",
+            f"cd {remote_repo} && git apply --reject --whitespace=fix diff.patch || true",  # Removed --allow-empty for old git, || true to continue if patch is empty
         ]
         
         # Then build - source cargo env first
@@ -348,13 +341,6 @@ SCP_CMD="scp -o StrictHostKeyChecking=no -i {remote_ssh_key}"
         for repeat_num in range(self.repeats):
             print("Running repeat", repeat_num)
             _script = script_base[:]
-
-            # Ensure log directories exist on each target VM.
-            for vm, _bin_list in self.binary_mapping.items():
-                _script += f"""
-$SSH_CMD {self.dev_ssh_user}@{vm.public_ip} 'mkdir -p {self.remote_workdir}/logs/{repeat_num}' || true
-"""
-
             for vm, bin_list in self.binary_mapping.items():
                 for bin in bin_list:
                     if "node" in bin:
@@ -515,7 +501,8 @@ sleep 60
             dirname = os.path.join(self.remote_workdir, "logs", str(i))
             print("Checking remotely:", dirname)
             res = run_remote_public_ip([
-                f"ls {dirname}"
+                # run_remote_public_ip` returns a non-empty error string on failure
+                f"bash -lc 'ls -A {dirname} 2>/dev/null || true'"
             ], self.dev_ssh_user, self.dev_ssh_key, self.dev_vm, hide=True)[0]
             if len(res) == 0:
                 need_to_run_repeats.append(i)

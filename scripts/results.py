@@ -6,7 +6,7 @@ import os
 import pickle
 from typing import Callable, Dict, List, OrderedDict, Tuple, Optional
 
-from .experiments import Experiment
+from experiments import Experiment
 from collections import defaultdict
 import re
 from dateutil.parser import isoparse
@@ -31,8 +31,8 @@ matplotlib.rcParams['text.latex.preamble'] = r"""
 \usepackage[libertine]{newtxmath}
 """
 
-from .autobahn_logs import LogParser as AutobahnLogParser
-from .autobahn_experiments import AutobahnExperiment
+from autobahn_logs import LogParser as AutobahnLogParser
+from autobahn_experiments import AutobahnExperiment
 
 # Log format follows the log4rs config.
 # Capture the time from the 3rd []
@@ -40,13 +40,6 @@ from .autobahn_experiments import AutobahnExperiment
 # Sample log: [INFO][pft::execution::engines::logger][2024-08-06T10:28:13.926997933+00:00] fork.last = 2172, fork.last_qc = 2169, commit_index = 2171, byz_commit_index = 2166, pending_acks = 200, pending_qcs = 1 num_crash_committed_txs = 100, num_byz_committed_txs = 100, fork.last_hash = b7da989badce213929ab457e5301b587593e0781e081ba7261d57cd7778e1b7b, total_client_request = 388706, view = 1, view_is_stable = true, i_am_leader: true
 node_rgx = re.compile(r"\[INFO\]\[.*\]\[(.*)\] fork\.last = ([0-9]+), fork\.last_qc = ([0-9]+), commit_index = ([0-9]+), byz_commit_index = ([0-9]+), pending_acks = ([0-9]+), pending_qcs = ([0-9]+) num_crash_committed_txs = ([0-9]+), num_byz_committed_txs = ([0-9]+), fork\.last_hash = (.+), total_client_request = ([0-9]+), view = ([0-9]+), view_is_stable = (.+), i_am_leader\: (.+)")
 node_rgx2 = re.compile(r"\[INFO\]\[.*\]\[(.*)\] Total unlogged txs: ([0-9]+)")
-
-# DAG-specific regex patterns
-# Sample: [INFO][pft::consensus::app][2025-12-11T22:30:00.000000000+00:00] Total CARs: 12345
-dag_cars_rgx = re.compile(r"\[INFO\]\[.*\]\[(.*)\] Total CARs: ([0-9]+)")
-
-# Sample: [INFO][pft::consensus::app][2025-12-11T22:30:00.000000000+00:00] Lane Stats -- lane.last_n = 100, lane.last_hash = abc123..., num_client_request = 500, num_crash_committed_txs = 450, num_byz_committed_txs = 450
-dag_lane_rgx = re.compile(r"\[INFO\]\[.*\]\[(.*)\] Lane Stats -- lane\.last_n = ([0-9]+), lane\.last_hash = ([a-f0-9]+), num_client_request = ([0-9]+), num_crash_committed_txs = ([0-9]+), num_byz_committed_txs = ([0-9]+)")
 
 # Sample log: [INFO][pft::client::logger][2025-02-25T23:33:23.145307984+00:00] Average Crash commit latency: 104390 us, Average Byz commit latency: 29271247 us
 client_rgx = re.compile(r"\[INFO\]\[.*\]\[(.*)\] Average Crash commit latency: ([0-9]+) us, Average Byz commit latency: ([0-9]+) us")
@@ -57,24 +50,20 @@ def process_tput(points, duration, ramp_up, ramp_down, tputs, tputs_unbatched, b
     Parses given points for throughput information.
     Skipping points before ramp_up and after ramp_down.
     Returns the filtered points.
-    
-    NOTE: In DAG mode, fork.last represents tip cut numbers (not block numbers),
-    but num_crash_txs and num_byz_txs still represent transaction counts,
-    so throughput calculations remain correct.
     '''
     points = [
         (
             isoparse(a[0]),    # 0: ISO format is used in run_remote
-            int(a[1]),         # 1: fork.last (blocks in regular mode, tip cuts in DAG mode)
+            int(a[1]),         # 1: fork.last
             int(a[2]),         # 2: fork.last_qc
-            int(a[3]),         # 3: commit_index (blocks in regular mode, tip cuts in DAG mode)
-            int(a[4]),         # 4: byz_commit_index (blocks in regular mode, tip cuts in DAG mode)
+            int(a[3]),         # 3: commit_index
+            int(a[4]),         # 4: byz_commit_index
             int(a[5]),         # 5: pending_acks
             int(a[6]),         # 6: pending_qcs
-            int(a[7]),         # 7: num_crash_txs (transactions in both modes)
-            int(a[8]),         # 8: num_byz_txs (transactions in both modes)
-            a[9],              # 9: fork.last_hash
-            int(a[10]),        # 10: total_client_request (requests in both modes)
+            int(a[7]),         # 7: num_crash_txs,
+            int(a[8]),         # 8: num_byz_txs,
+            a[9],              # 9: fork.last_hash,
+            int(a[10]),        # 10: total_client_request
             int(a[11]),        # 11: view
             a[12] == "true",   # 12: view_is_stable
             a[13] == "true"    # 13: i_am_leader
@@ -126,44 +115,6 @@ def process_tput(points, duration, ramp_up, ramp_down, tputs, tputs_unbatched, b
     tputs_unbatched.append(total_commit / total_runtime)
 
     return points
-
-
-def process_dag_metrics(dag_cars_points, duration, ramp_up, ramp_down):
-    '''
-    Process DAG-specific metrics: CAR throughput
-    
-    Returns dict with:
-    - car_throughput: CARs per second
-    - total_cars: Total CARs produced
-    '''
-    if not dag_cars_points or len(dag_cars_points) < 2:
-        return None
-    
-    # Parse CAR count points: (timestamp, car_count)
-    parsed_points = [
-        (isoparse(a[0]), int(a[1]))
-        for a in dag_cars_points
-    ]
-    
-    # Filter by ramp up/down
-    start_time = parsed_points[0][0] + datetime.timedelta(seconds=ramp_up)
-    end_time = parsed_points[0][0] + datetime.timedelta(seconds=duration) - datetime.timedelta(seconds=ramp_down)
-    
-    filtered_points = [p for p in parsed_points if p[0] >= start_time and p[0] <= end_time]
-    
-    if len(filtered_points) < 2:
-        return None
-    
-    total_runtime = (filtered_points[-1][0] - filtered_points[0][0]).total_seconds()
-    total_cars = filtered_points[-1][1] - filtered_points[0][1]
-    
-    car_throughput = total_cars / total_runtime if total_runtime > 0 else 0
-    
-    return {
-        'car_throughput': car_throughput,  # CARs per second
-        'total_cars': total_cars,
-        'runtime': total_runtime
-    }
 
 
 def process_latencies(points, duration, ramp_up, ramp_down, latencies, byz=False):
@@ -233,25 +184,11 @@ class Result:
         '''
         points = []
         read_points = []
-        dag_cars_points = []  # DAG: Total CARs over time
-        dag_lane_points = []  # DAG: Per-lane stats over time
-        
         with open(os.path.join(log_dir, node_log_names[0]), "r") as f:
             for line in f.readlines():
-                # Parse main fork stats (works for both regular and DAG mode)
                 captures = node_rgx.findall(line)
                 if len(captures) == 1:
                     points.append(captures[0])
-                
-                # Parse DAG-specific: Total CARs
-                dag_cars_captures = dag_cars_rgx.findall(line)
-                if len(dag_cars_captures) == 1:
-                    dag_cars_points.append(dag_cars_captures[0])
-                
-                # Parse DAG-specific: Lane Stats
-                dag_lane_captures = dag_lane_rgx.findall(line)
-                if len(dag_lane_captures) == 1:
-                    dag_lane_points.append(dag_lane_captures[0])
 
         num_nodes = len(node_log_names)
         for node_num in range(num_nodes):
@@ -262,21 +199,6 @@ class Result:
                     if len(captures) == 1:
                         _rp.append(captures[0])
             read_points.append(_rp)
-
-        # Process DAG-specific metrics if available
-        dag_metrics = None
-        if dag_cars_points:
-            print(f"  [DAG] Found {len(dag_cars_points)} Total CARs data points")
-            try:
-                dag_metrics = process_dag_metrics(dag_cars_points, duration, ramp_up, ramp_down)
-                if dag_metrics:
-                    print(f"  [DAG] CAR Throughput: {dag_metrics['car_throughput']:.2f} CARs/sec")
-                    print(f"  [DAG] Total CARs: {dag_metrics['total_cars']}")
-            except Exception as e:
-                print(f"  [DAG] Warning: Could not process CAR metrics: {e}")
-        
-        if dag_lane_points:
-            print(f"  [DAG] Found {len(dag_lane_points)} Lane Stats data points")
 
         try:
             _points = process_tput(points, duration, ramp_up, ramp_down, tputs, tputs_unbatched, byz, read_points)
@@ -682,23 +604,6 @@ class Result:
 
     def tput_latency_sweep_plot(self, plot_dict: Dict[str, List[Stats]], output: Optional[str]):
         # Find how many subfigures we need.
-
-        # Drop any empty series to avoid hard-crashing in min()/max().
-        dropped = [k for (k, v) in plot_dict.items() if v is None or len(v) == 0]
-        if dropped:
-            print(
-                "\x1b[33;1mWarning:\x1b[0m No parsed stats for:",
-                dropped,
-                "\nThis usually means the client binaries crashed or produced no latency logs.\n"
-                "Check client*.err for JSON/config parse errors (e.g., unknown RequestConfig variant).\n",
-            )
-            plot_dict = {k: v for (k, v) in plot_dict.items() if v is not None and len(v) > 0}
-
-        if len(plot_dict) == 0:
-            raise ValueError(
-                "No usable experiment stats were parsed (all series empty). "
-                "This is often caused by clients failing early (see client*.err) or log format mismatch."
-            )
 
         bounding_boxes = {
             k: [
