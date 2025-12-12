@@ -348,6 +348,13 @@ SCP_CMD="scp -o StrictHostKeyChecking=no -i {remote_ssh_key}"
         for repeat_num in range(self.repeats):
             print("Running repeat", repeat_num)
             _script = script_base[:]
+
+            # Ensure log directories exist on each target VM.
+            for vm, _bin_list in self.binary_mapping.items():
+                _script += f"""
+$SSH_CMD {self.dev_ssh_user}@{vm.public_ip} 'mkdir -p {self.remote_workdir}/logs/{repeat_num}' || true
+"""
+
             for vm, bin_list in self.binary_mapping.items():
                 for bin in bin_list:
                     if "node" in bin:
