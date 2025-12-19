@@ -22,32 +22,33 @@ Edit the `NODES` array in both:
 
 Use the following format:
 
-```bash
-NODES=(
-    "hp126.utah.cloudlab.us" # node0
-    "hp134.utah.cloudlab.us" # node1
-    "hp152.utah.cloudlab.us" # node2
-    "hp091.utah.cloudlab.us" # node3
-    "hp138.utah.cloudlab.us" # node4
-    "hp097.utah.cloudlab.us" # node5
-    "hp125.utah.cloudlab.us" # node6
-    "hp156.utah.cloudlab.us" # node7
-    "hp155.utah.cloudlab.us" # node8
-    "hp090.utah.cloudlab.us" # node9
-    "hp160.utah.cloudlab.us" # node10
-)
+    
+    NODES=(
+        "hp126.utah.cloudlab.us" # node0
+        "hp134.utah.cloudlab.us" # node1
+        "hp152.utah.cloudlab.us" # node2
+        "hp091.utah.cloudlab.us" # node3
+        "hp138.utah.cloudlab.us" # node4
+        "hp097.utah.cloudlab.us" # node5
+        "hp125.utah.cloudlab.us" # node6
+        "hp156.utah.cloudlab.us" # node7
+        "hp155.utah.cloudlab.us" # node8
+        "hp090.utah.cloudlab.us" # node9
+        "hp160.utah.cloudlab.us" # node10
+    )
+
 
 ## 3. Set Up All Nodes
 
 Activate the Python virtual environment and run the setup scripts:
 
-```bash
-source .venv-wsl/bin/activate
 
-chmod +x scripts/setup_all_nodes.sh scripts/distribute_ssh_keys.sh
+    source .venv-wsl/bin/activate
 
-./scripts/setup_all_nodes.sh
-./scripts/distribute_ssh_keys.sh
+    chmod +x scripts/setup_all_nodes.sh scripts/distribute_ssh_keys.sh
+
+    ./scripts/setup_all_nodes.sh
+    ./scripts/distribute_ssh_keys.sh
 
 These scripts:
 
@@ -72,12 +73,12 @@ Edit the relevant `.toml` files under `experiments/` to:
 
 Run experiments using the experiment driver script:
 
-```bash
-python scripts -c experiments/cloudlab_protocol_comparison.toml
-python scripts -c experiments/cloudlab_node_scaling_trajectory.toml
-python scripts -c experiments/cloudlab_dag_pirateship_sweep.toml
-python scripts -c experiments/cloudlab_network_blip.toml
-python scripts -c experiments/cloudlab_network_blip_dag.toml
+
+    python scripts -c experiments/cloudlab_protocol_comparison.toml
+    python scripts -c experiments/cloudlab_node_scaling_trajectory.toml
+    python scripts -c experiments/cloudlab_dag_pirateship_sweep.toml
+    python scripts -c experiments/cloudlab_network_blip.toml
+    python scripts -c experiments/cloudlab_network_blip_dag.toml
 
 Each command launches a full multi-node experiment on CloudLab and collects logs and metrics automatically.
 
