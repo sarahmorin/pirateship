@@ -4,7 +4,7 @@ from dataclasses import dataclass
 import os
 from typing import Any, Dict, List, Optional
 
-from .experiments import Experiment
+from experiments import Experiment
 
 
 @dataclass(frozen=True)
@@ -127,7 +127,17 @@ PFT_PORT_START={self._node_port_base + 1 if self._node_port_base is not None els
 PFT_PORT_END={self._node_port_base + self.num_nodes if self._node_port_base is not None else 3000 + self.num_nodes}
 
 """
-
+        chain = "PFT_BLIP"
+        port_start = (
+            self._node_port_base + 1
+            if self._node_port_base is not None
+            else 3001
+        )
+        port_end = (
+            self._node_port_base + self.num_nodes
+            if self._node_port_base is not None
+            else 3000 + self.num_nodes
+        )
         for repeat_num in range(self.repeats):
             _script = script_base[:]
 
@@ -160,21 +170,32 @@ PID="$PID $!"
                 # Build the background block.
                 _script += f"""
 (
+  echo "Starting blip background process for {blip.name}"
   sleep {blip.start_s}
+  echo "Blip {blip.name} starting at $(date)"
 """
                 for (node_name, ip, log_path) in targets:
+                    blip_log_path = log_path.replace('.log', '_blip.log')
+                    blip_log_dir = os.path.dirname(blip_log_path)
                     _script += f"""
-  $SSH_CMD {self.dev_ssh_user}@{ip} "bash -lc 'ts=$(date -u +\"%Y-%m-%dT%H:%M:%S.%N+00:00\"); echo \"[INFO][pft::experiment::blip][$ts] NETBLIP START name={blip.name}\" >> {log_path}'" || true
-  $SSH_CMD {self.dev_ssh_user}@{ip} "bash -lc 'sudo -n iptables -N $PFT_BLIP_CHAIN 2>/dev/null || true; sudo -n iptables -F $PFT_BLIP_CHAIN || true; sudo -n iptables -C INPUT -j $PFT_BLIP_CHAIN 2>/dev/null || sudo -n iptables -I INPUT -j $PFT_BLIP_CHAIN; sudo -n iptables -C OUTPUT -j $PFT_BLIP_CHAIN 2>/dev/null || sudo -n iptables -I OUTPUT -j $PFT_BLIP_CHAIN; sudo -n iptables -A $PFT_BLIP_CHAIN -p tcp --dport $PFT_PORT_START:$PFT_PORT_END -j DROP; sudo -n iptables -A $PFT_BLIP_CHAIN -p tcp --sport $PFT_PORT_START:$PFT_PORT_END -j DROP'" || true
-"""
+  echo "Creating blip log file: {blip_log_path}" || true
+  $SSH_CMD {self.dev_ssh_user}@{ip} "mkdir -p {blip_log_dir}" || true
+  $SSH_CMD {self.dev_ssh_user}@{ip} "touch {blip_log_path}" || true
+  $SSH_CMD {self.dev_ssh_user}@{ip} "bash -lc 'ts=\\$(date -u +%Y-%m-%dT%H:%M:%S.%3N+00:00); echo \"[INFO][pft::experiment::blip][\\$ts] NETBLIP START name={blip.name}\" >> \"{blip_log_path}\"'" || true
+  $SSH_CMD {self.dev_ssh_user}@{ip} "sudo -n iptables -N {chain} 2>/dev/null || true; sudo -n iptables -F {chain} || true; sudo -n iptables -C INPUT -j {chain} 2>/dev/null || sudo -n iptables -I INPUT -j {chain}; sudo -n iptables -C OUTPUT -j {chain} 2>/dev/null || sudo -n iptables -I OUTPUT -j {chain}; sudo -n iptables -A {chain} -p tcp --dport {port_start}:{port_end} -j DROP; sudo -n iptables -A {chain} -p tcp --sport {port_start}:{port_end} -j DROP" || true
+  $SSH_CMD {self.dev_ssh_user}@{ip} "bash -lc 'echo \"[DEBUG] iptables rules:\" >> \"{blip_log_path}\"; sudo -n iptables -S {chain} >> \"{blip_log_path}\" 2>&1; sudo -n iptables -vnL {chain} >> \"{blip_log_path}\" 2>&1'" || true
+
+  """
 
                 _script += f"""
   sleep {blip.duration_s}
 """
                 for (node_name, ip, log_path) in targets:
+                    blip_log_path = log_path.replace('.log', '_blip.log')
                     _script += f"""
-  $SSH_CMD {self.dev_ssh_user}@{ip} "bash -lc 'sudo -n iptables -D INPUT -j $PFT_BLIP_CHAIN 2>/dev/null || true; sudo -n iptables -D OUTPUT -j $PFT_BLIP_CHAIN 2>/dev/null || true; sudo -n iptables -F $PFT_BLIP_CHAIN 2>/dev/null || true; sudo -n iptables -X $PFT_BLIP_CHAIN 2>/dev/null || true'" || true
-  $SSH_CMD {self.dev_ssh_user}@{ip} "bash -lc 'ts=$(date -u +\"%Y-%m-%dT%H:%M:%S.%N+00:00\"); echo \"[INFO][pft::experiment::blip][$ts] NETBLIP END name={blip.name}\" >> {log_path}'" || true
+  $SSH_CMD {self.dev_ssh_user}@{ip} "sudo -n iptables -D INPUT -j {chain} 2>/dev/null || true; sudo -n iptables -D OUTPUT -j {chain} 2>/dev/null || true; sudo -n iptables -F {chain} 2>/dev/null || true; sudo -n iptables -X {chain} 2>/dev/null || true" || true
+  $SSH_CMD {self.dev_ssh_user}@{ip} "bash -lc 'ts=\\$(date -u +%Y-%m-%dT%H:%M:%S.%3N+00:00); echo \"[INFO][pft::experiment::blip][\\$ts] NETBLIP END name={blip.name}\" >> \"{blip_log_path}\"'" || true
+  $SSH_CMD {self.dev_ssh_user}@{ip} "ls -la {blip_log_path}" || true
 """
 
                 _script += """
@@ -214,6 +235,7 @@ $SSH_CMD {self.dev_ssh_user}@{vm.public_ip} 'pkill -9 -c {binary_name}' || true
 $SSH_CMD {self.dev_ssh_user}@{vm.public_ip} 'rm -rf /data/*' || true
 $SCP_CMD {self.dev_ssh_user}@{vm.public_ip}:{self.remote_workdir}/logs/{repeat_num}/{bin}.log {self.remote_workdir}/logs/{repeat_num}/{bin}.log || true
 $SCP_CMD {self.dev_ssh_user}@{vm.public_ip}:{self.remote_workdir}/logs/{repeat_num}/{bin}.err {self.remote_workdir}/logs/{repeat_num}/{bin}.err || true
+$SCP_CMD {self.dev_ssh_user}@{vm.public_ip}:{self.remote_workdir}/logs/{repeat_num}/{bin}_blip.log {self.remote_workdir}/logs/{repeat_num}/{bin}_blip.log || true
 """
 
             _script += """

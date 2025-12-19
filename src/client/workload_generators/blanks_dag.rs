@@ -34,7 +34,7 @@ impl PerWorkerWorkloadGenerator for BlankWorkloadGenerator {
                 is_reconfiguration: false,
                 is_2pc: false,
             },
-            executor: Executor::Leader,
+            executor: Executor::Any,
         }
     }
 

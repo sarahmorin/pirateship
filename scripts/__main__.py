@@ -22,6 +22,7 @@ import json
 import tqdm
 from crypto import *
 from app_experiments import AppExperiment
+from blip_experiments import NetworkBlipExperiment
 from ssh_utils import *
 from deployment import Deployment
 from experiments import Experiment
@@ -135,6 +136,8 @@ def parse_config(path, workdir=None, existing_experiments=None):
             klass = Experiment
         elif experiment_type == "app":
             klass = AppExperiment
+        elif experiment_type == "network_blip":
+            klass = NetworkBlipExperiment
         elif experiment_type == "autobahn":
             klass = AutobahnExperiment
         project_home = toml_dict["project_home"]
@@ -145,6 +148,7 @@ def parse_config(path, workdir=None, existing_experiments=None):
             seq_start = int(e.get("seq_start", 0))
             for i, params in enumerate(flats):
                 _e = nested_override(e, params)
+                network_blips = _e.get("network_blips", e.get("network_blips", None))
                 if "node_config" in _e:
                     _node_config = nested_override(
                         node_config, _e["node_config"])
@@ -157,42 +161,91 @@ def parse_config(path, workdir=None, existing_experiments=None):
                 else:
                     _client_config = client_config
 
-                experiments.append(klass(
-                    os.path.join(_e['name'], str(i + seq_start)),
-                    _e.get("group_name", _e['name']), # Group name
-                    i + seq_start, # Seq num
-                    int(_e["repeats"]),
-                    int(_e["duration"]),
-                    int(_e["num_nodes"]),
-                    int(_e["num_clients"]),
-                    _node_config,
-                    _client_config,
-                    _e.get("node_distribution", "uniform"),
-                    _e.get("client_region", -1),    # -1 means use all clients
-                    _e.get("build_command", "make"),
-                    git_hash_override,
-                    project_home,
-                    controller_must_run
-                ))
+                if klass is NetworkBlipExperiment:
+                    experiments.append(
+                        klass(
+                            os.path.join(_e["name"], str(i + seq_start)),
+                            _e.get("group_name", _e["name"]),  # Group name
+                            i + seq_start,  # Seq num
+                            int(_e["repeats"]),
+                            int(_e["duration"]),
+                            int(_e["num_nodes"]),
+                            int(_e["num_clients"]),
+                            _node_config,
+                            _client_config,
+                            _e.get("node_distribution", "uniform"),
+                            _e.get("client_region", -1),  # -1 means use all clients
+                            _e.get("build_command", "make"),
+                            git_hash_override,
+                            project_home,
+                            controller_must_run,
+                            network_blips=network_blips,
+                        )
+                    )
+                else:
+                    experiments.append(
+                        klass(
+                            os.path.join(_e["name"], str(i + seq_start)),
+                            _e.get("group_name", _e["name"]),  # Group name
+                            i + seq_start,  # Seq num
+                            int(_e["repeats"]),
+                            int(_e["duration"]),
+                            int(_e["num_nodes"]),
+                            int(_e["num_clients"]),
+                            _node_config,
+                            _client_config,
+                            _e.get("node_distribution", "uniform"),
+                            _e.get("client_region", -1),  # -1 means use all clients
+                            _e.get("build_command", "make"),
+                            git_hash_override,
+                            project_home,
+                            controller_must_run,
+                        )
+                    )
         else:
             seq_start = int(e.get("seq_start", 0))
-            experiments.append(klass(
-                os.path.join(e['name'], str(seq_start)),
-                e.get("group_name", e["name"]),  # Group name
-                seq_start, # Seq num
-                int(e["repeats"]),
-                int(e["duration"]),
-                int(e["num_nodes"]),
-                int(e["num_clients"]),
-                node_config,
-                client_config,
-                e.get("node_distribution", "uniform"),
-                e.get("client_region", -1),    # -1 means use all clients
-                e.get("build_command", "make"),
-                git_hash_override,
-                project_home,
-                controller_must_run
-            ))
+            network_blips = e.get("network_blips", None)
+            if klass is NetworkBlipExperiment:
+                experiments.append(
+                    klass(
+                        os.path.join(e["name"], str(seq_start)),
+                        e.get("group_name", e["name"]),  # Group name
+                        seq_start,  # Seq num
+                        int(e["repeats"]),
+                        int(e["duration"]),
+                        int(e["num_nodes"]),
+                        int(e["num_clients"]),
+                        node_config,
+                        client_config,
+                        e.get("node_distribution", "uniform"),
+                        e.get("client_region", -1),  # -1 means use all clients
+                        e.get("build_command", "make"),
+                        git_hash_override,
+                        project_home,
+                        controller_must_run,
+                        network_blips=network_blips,
+                    )
+                )
+            else:
+                experiments.append(
+                    klass(
+                        os.path.join(e["name"], str(seq_start)),
+                        e.get("group_name", e["name"]),  # Group name
+                        seq_start,  # Seq num
+                        int(e["repeats"]),
+                        int(e["duration"]),
+                        int(e["num_nodes"]),
+                        int(e["num_clients"]),
+                        node_config,
+                        client_config,
+                        e.get("node_distribution", "uniform"),
+                        e.get("client_region", -1),  # -1 means use all clients
+                        e.get("build_command", "make"),
+                        git_hash_override,
+                        project_home,
+                        controller_must_run,
+                    )
+                )
 
     results = []
     if existing_experiments is not None:

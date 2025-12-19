@@ -989,7 +989,7 @@ class Result:
 
         plt.grid()
 
-        plt.xlim(25, 45)
+        plt.xlim(min(times), max(times))
         plt.xticks(fontsize=90)
         plt.yticks(fontsize=65)
 
@@ -999,8 +999,7 @@ class Result:
         ylim_max = max(max(crash_commits), max(byz_commits))
 
         # Will use this range for all text boxes for events
-        text_box_locs = list([-200, -5, 10, -6])
-        assert len(text_box_locs) == len(events)
+        text_box_locs = np.linspace(ylim_min, ylim_max, num=max(len(events), 1) + 2)[1:-1].tolist()
 
 
         line_colors = ['r', 'g', 'b', 'c', 'm', 'y', 'k', "orange"]
@@ -1033,43 +1032,63 @@ class Result:
 
     def parse_event(self, event) -> Tuple[float, str]:
         """
-        Use the given pattern in the target node to find the event.
-        Takes the first capture group (assumed timestamp) and finds the seconds elapsed since start.
-        Since there can be clock skew between nodes, it is better to use time relative to start of experiment.
-        with the text description.
+        Find an event timestamp in the target node log and convert it
+        to seconds since experiment start (defined by target_node log).
         """
         description = event.get("description", event.get("name", "Event"))
 
+        # Pattern to grab timestamps
+        ts_pattern = re.compile(r"\[INFO\]\[.*\]\[(.*)\]")
 
-        experiment_start_pattern = re.compile(r"\[INFO\]\[.*\]\[(.*)\]")
+        # 1) Determine experiment start time from the main plotted node
+        main_node = self.kwargs.get("target_node", "node1")
+        main_log_path = os.path.join(
+            self.experiments[0].local_workdir,
+            "logs",
+            "0",
+            f"{main_node}.log",
+        )
 
-        pattern = event.get("pattern", None)
-        if pattern is None:
-            patterns = [re.compile(p) for p in event["patterns"]]
-        else:
-            patterns = [re.compile(pattern)]
+        exp_start_time = None
+        with open(main_log_path, "r") as f:
+            for line in f:
+                m = ts_pattern.findall(line)
+                if m:
+                    exp_start_time = isoparse(m[0])
+                    break
+
+        assert exp_start_time is not None, "Could not determine experiment start time"
+
+        # 2) Search for the event in its target log
+        pattern = event.get("pattern")
+        assert pattern is not None, "Event must define a pattern"
+        event_rgx = re.compile(pattern)
 
         target_node = event["target"]
-        log_path = os.path.join(self.experiments[0].local_workdir, "logs", "0", f"{target_node}.log")
+        target_log_path = os.path.join(
+            self.experiments[0].local_workdir,
+            "logs",
+            "0",
+            f"{target_node}.log",
+        )
 
-        target_occurrence_num = event.get("occurrence_num", 1)
-        occurrence_num = 0
-        start_time = None
-        with open(log_path, "r") as f:
-            for line in f.readlines():
-                if start_time is None:
-                    # Is this the line with start time?
-                    captures = experiment_start_pattern.findall(line)
-                    if len(captures) > 0:
-                        start_time = isoparse(captures[0])
+        occurrence_num = event.get("occurrence_num", 1)
+        seen = 0
 
-                for pattern in patterns:
-                    captures = pattern.findall(line)
-                    if len(captures) > 0:
-                        occurrence_num += 1
-                        if occurrence_num == target_occurrence_num:
-                            assert start_time is not None
-                            return ((isoparse(captures[0]) - start_time).total_seconds(), description)
+        with open(target_log_path, "r") as f:
+            for line in f:
+                m = event_rgx.findall(line)
+                if m:
+                    seen += 1
+                    if seen == occurrence_num:
+                        event_time = isoparse(m[0])
+                        return (
+                            (event_time - exp_start_time).total_seconds(),
+                            description,
+                        )
+
+        raise RuntimeError(f"Event {event['name']} not found in {target_node}.log")
+
 
 
     def crash_byz_tput_timeseries(self):
@@ -1093,10 +1112,7 @@ class Result:
             assert len(self.experiment_groups) == 1, "Only one group is allowed for this plotter"
             assert len(self.experiment_groups) == 1, "Only one group is allowed for this plotter"
             events = self.kwargs.get('events', [])
-            events = [
-                self.parse_event(event)
-                for event in events
-            ]
+            events = [self.parse_event(event) for event in events]
 
             expr = list(self.experiment_groups.values())[0]
 
