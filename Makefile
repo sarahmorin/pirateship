@@ -10,18 +10,34 @@ pirateship_logger:
 contrib:
 	CC=clang CXX=clang++ cargo build --release --manifest-path contrib/Cargo.toml
 
+.PHONY: dag_pirateship_logger
+dag_pirateship_logger:
+	CC=clang CXX=clang++ cargo build --release --features dag
+
 .PHONY: pirateship_kvs
 pirateship_kvs:
 	CC=clang CXX=clang++ cargo build --release --features pirateship,app_kvs,storage,fast_path,platforms --no-default-features
+
+.PHONY: dag_pirateship_kvs
+dag_pirateship_kvs:
+	CC=clang CXX=clang++ cargo build --release --features pirateship,app_kvs,storage,fast_path,platforms,dag --no-default-features
 
 .PHONY: signed_raft_kvs
 signed_raft_kvs:
 	CC=clang CXX=clang++ cargo build --release --features signed_raft,app_kvs,storage --no-default-features
 
+.PHONY: dag_signed_raft_kvs
+dag_signed_raft_kvs:
+	CC=clang CXX=clang++ cargo build --release --features signed_raft,app_kvs,storage,dag --no-default-features
 
 .PHONY: pirateship_logger_basic
 pirateship_logger_basic:
 	CC=clang CXX=clang++ cargo build --release --features pirateship,app_logger --no-default-features
+
+
+.PHONY: dag_pirateship_logger_basic
+dag_pirateship_logger_basic:
+	CC=clang CXX=clang++ cargo build --release --features pirateship,app_logger,dag --no-default-features
 
 
 .PHONY: pirateship_logger_evil
@@ -51,6 +67,10 @@ lucky_raft_logger:
 .PHONY: signed_raft_logger
 signed_raft_logger:
 	CC=clang CXX=clang++ cargo build --release --features signed_raft,app_logger,storage --no-default-features
+
+.PHONY: dag_signed_raft_logger
+dag_signed_raft_logger:
+	CC=clang CXX=clang++ cargo build --release --features signed_raft,app_logger,storage,dag --no-default-features
 
 
 .PHONY: engraft_logger

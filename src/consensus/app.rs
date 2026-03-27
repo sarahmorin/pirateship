@@ -32,18 +32,41 @@ use super::{super::utils::timer::ResettableTimer, client_reply::ClientReplyComma
 
 pub enum AppCommand {
     NewRequestBatch(
-        u64,      /* block.n */
-        u64,      /* view */
-        bool,     /* view_is_stable */
-        bool,     /* i_am_leader */
-        usize,    /* length of new batch of request */
-        HashType, /* hash of the last block */
+        u64,                          /* block.n */
+        u64,                          /* view */
+        bool,                         /* view_is_stable */
+        bool,                         /* i_am_leader */
+        usize,                        /* length of new batch of request */
+        HashType,                     /* hash of the last block */
+        #[cfg(feature = "dag")] bool, /* is my lane */
+    ),
+    #[cfg(feature = "dag")]
+    NewTipCut(
+        u64,      /* tipcut.n */
+        u64,      /* tipcut.view */
+        bool,     /* tipcut.view_is_stable */
+        bool,     /* tipcut.i_am_leader */
+        usize,    /* number of CARs in the tipcut */
+        HashType, /* hash of the last tipcut */
     ),
     CrashCommit(
         Vec<CachedBlock>, /* all blocks from old_ci + 1 to new_ci */
     ),
+    #[cfg(feature = "dag")]
+    CrashCommitWithOrigins(
+        u64,                                         /* new ci */
+        u64,                                         /* new last_qc */
+        Vec<CachedBlock>,                            /* all blocks from old_ci + 1 to new_ci */
+        std::collections::HashMap<HashType, String>, /* block_hash -> origin_node map for proxy pattern */
+    ),
     ByzCommit(
         Vec<CachedBlock>, /* all blocks from old_bci + 1 to new_bci */
+    ),
+    #[cfg(feature = "dag")]
+    ByzCommitWithOrigins(
+        u64,                                         /* new bci */
+        Vec<CachedBlock>,                            /* all blocks from old_bci + 1 to new_bci */
+        std::collections::HashMap<HashType, String>, /* block_hash -> origin_node map for proxy pattern */
     ),
     Rollback(u64 /* new last block */),
 }
@@ -58,6 +81,14 @@ pub trait AppEngine {
     fn handle_rollback(&mut self, new_last_block: u64);
     fn handle_unlogged_request(&mut self, request: ProtoTransaction) -> ProtoTransactionResult;
     fn get_current_state(&self) -> Self::State;
+}
+
+struct LaneLogStats {
+    last_n: u64,
+    last_hash: HashType,
+    total_requests: u64,
+    total_crash_committed_txs: u64,
+    total_byz_committed_txs: u64,
 }
 
 struct LogStats {
@@ -76,6 +107,11 @@ struct LogStats {
 
     #[cfg(feature = "extra_2pc")]
     total_2pc_txs: u64,
+
+    #[cfg(feature = "dag")]
+    lane_stats: LaneLogStats,
+    #[cfg(feature = "dag")]
+    total_cars: u64,
 }
 
 impl LogStats {
@@ -96,6 +132,17 @@ impl LogStats {
 
             #[cfg(feature = "extra_2pc")]
             total_2pc_txs: 0,
+
+            #[cfg(feature = "dag")]
+            lane_stats: LaneLogStats {
+                last_n: 0,
+                last_hash: default_hash(),
+                total_requests: 0,
+                total_crash_committed_txs: 0,
+                total_byz_committed_txs: 0,
+            },
+            #[cfg(feature = "dag")]
+            total_cars: 0,
         };
 
         #[cfg(not(feature = "view_change"))]
@@ -123,6 +170,10 @@ impl LogStats {
             self.view_is_stable,
             self.i_am_leader
         );
+        #[cfg(feature = "dag")]
+        {
+            info!("Total CARs: {}", self.total_cars);
+        }
 
         info!("Total unlogged txs: {}", self.total_unlogged_txs);
 
@@ -130,6 +181,17 @@ impl LogStats {
         {
             info!("Total 2PC txs: {}", self.total_2pc_txs);
         }
+    }
+
+    #[cfg(feature = "dag")]
+    fn print_lane(&self) {
+        info!("Lane Stats -- lane.last_n = {}, lane.last_hash = {}, num_client_request = {}, num_crash_committed_txs = {}, num_byz_committed_txs = {}",
+            self.lane_stats.last_n,
+            self.lane_stats.last_hash.encode_hex::<String>(),
+            self.lane_stats.total_requests,
+            self.lane_stats.total_crash_committed_txs,
+            self.lane_stats.total_byz_committed_txs,
+        );
     }
 }
 
@@ -304,6 +366,7 @@ impl<'a, E: AppEngine + Send + Sync + 'a> Application<'a, E> {
 
     async fn handle_staging_command(&mut self, cmd: AppCommand) {
         match cmd {
+            #[cfg(not(feature = "dag"))]
             AppCommand::NewRequestBatch(
                 n,
                 view,
@@ -319,6 +382,50 @@ impl<'a, E: AppEngine + Send + Sync + 'a> Application<'a, E> {
                 self.stats.last_hash = last_hash;
 
                 self.stats.total_requests += length as u64;
+
+                if self.stats.last_n % 1000 == 0 {
+                    // This is necessary for manual sanity checks.
+                    self.stats.print();
+                }
+
+                self.perf_register(n);
+            }
+            #[cfg(feature = "dag")]
+            AppCommand::NewRequestBatch(
+                n,
+                view,
+                view_is_stable,
+                i_am_leader,
+                length,
+                last_hash,
+                is_my_lane,
+            ) => {
+                if is_my_lane {
+                    self.stats.lane_stats.last_n = n;
+                    self.stats.lane_stats.total_requests += length as u64;
+                    self.stats.lane_stats.last_hash = last_hash;
+                }
+                self.stats.view = view;
+                self.stats.view_is_stable = view_is_stable;
+                self.stats.i_am_leader = i_am_leader;
+
+                self.stats.total_requests += length as u64;
+
+                if is_my_lane && self.stats.lane_stats.last_n % 100 == 0 {
+                    // This is necessary for manual sanity checks.
+                    self.stats.print_lane();
+                }
+
+                self.perf_register(n);
+            }
+            #[cfg(feature = "dag")]
+            AppCommand::NewTipCut(n, view, view_is_stable, i_am_leader, num_cars, last_hash) => {
+                self.stats.last_n = n;
+                self.stats.view = view;
+                self.stats.view_is_stable = view_is_stable;
+                self.stats.i_am_leader = i_am_leader;
+                self.stats.last_hash = last_hash;
+                self.stats.total_cars += num_cars as u64;
 
                 if self.stats.last_n % 1000 == 0 {
                     // This is necessary for manual sanity checks.
@@ -374,6 +481,62 @@ impl<'a, E: AppEngine + Send + Sync + 'a> Application<'a, E> {
                     self.perf_add_event(n, "Send Reply");
                 }
             }
+            #[cfg(feature = "dag")]
+            AppCommand::CrashCommitWithOrigins(new_ci, new_last_qc, blocks, origin_map) => {
+                // DAG mode: Handle crash commit with origin node information for proxy pattern
+                let my_name = self.config.get().net_config.name.clone();
+
+                let (block_hashes, block_ns) = blocks
+                    .iter()
+                    .map(|block| (block.block_hash.clone(), block.block.n))
+                    .collect::<(Vec<_>, Vec<_>)>();
+
+                let results = self.engine.handle_crash_commit(blocks);
+
+                for n in &block_ns {
+                    self.perf_add_event(*n, "Process Crash Committed Block");
+                }
+
+                self.stats.total_crash_committed_txs +=
+                    results.iter().map(|e| e.len() as u64).sum::<u64>();
+                self.stats.ci = new_ci;
+                self.stats.last_qc = new_last_qc;
+
+                assert_eq!(block_hashes.len(), results.len());
+
+                let block_ns_cp = block_ns.clone();
+
+                // Build result map with origin node information
+                let result_map_with_origins: std::collections::HashMap<_, _> = block_hashes
+                    .into_iter()
+                    .zip(block_ns.into_iter().zip(results.into_iter()))
+                    .map(|(hash, (n, results))| {
+                        let origin_node = origin_map.get(&hash).cloned();
+                        (hash, (n, results, origin_node))
+                    })
+                    .collect();
+
+                // Convert Option<String> to required String (empty string if missing)
+                let result_map_with_origins = result_map_with_origins
+                    .into_iter()
+                    .map(|(hash, (n, results, origin_opt))| {
+                        (hash, (n, results, origin_opt.unwrap_or_default()))
+                    })
+                    .collect();
+
+                // Send to ClientReplyHandler with origin info (variant takes single argument)
+                self.client_reply_tx
+                    .send(ClientReplyCommand::CrashCommitAckWithOrigins(
+                        result_map_with_origins,
+                        self.stats.i_am_leader,
+                    ))
+                    .await
+                    .unwrap();
+
+                for n in block_ns_cp {
+                    self.perf_add_event(n, "Send Reply");
+                }
+            }
             AppCommand::ByzCommit(blocks) => {
                 let mut new_bci = self.stats.bci;
                 let (block_hashes, block_ns) = blocks
@@ -402,6 +565,57 @@ impl<'a, E: AppEngine + Send + Sync + 'a> Application<'a, E> {
                     .collect();
                 self.client_reply_tx
                     .send(ClientReplyCommand::ByzCommitAck(result_map))
+                    .await
+                    .unwrap();
+
+                for n in block_ns_cp {
+                    self.perf_deregister(n);
+                }
+            }
+            #[cfg(feature = "dag")]
+            AppCommand::ByzCommitWithOrigins(new_bci, blocks, origin_map) => {
+                // DAG mode: Handle execution with origin node information for proxy pattern
+                let my_name = self.config.get().net_config.name.clone();
+
+                let (block_hashes, block_ns) = blocks
+                    .iter()
+                    .map(|block| (block.block_hash.clone(), block.block.n))
+                    .collect::<(Vec<_>, Vec<_>)>();
+
+                let results = self.engine.handle_byz_commit(blocks);
+                self.stats.total_byz_committed_txs +=
+                    results.iter().map(|e| e.len() as u64).sum::<u64>();
+                self.stats.bci = new_bci;
+
+                assert_eq!(block_hashes.len(), results.len());
+
+                let block_ns_cp = block_ns.clone();
+
+                // Build result map with origin node information
+                // For each block, check if it has an origin_node and if it's different from us
+                let result_map_with_origins: std::collections::HashMap<_, _> = block_hashes
+                    .into_iter()
+                    .zip(block_ns.into_iter().zip(results.into_iter()))
+                    .map(|(hash, (n, results))| {
+                        let origin_node = origin_map.get(&hash).cloned();
+                        (hash, (n, results, origin_node))
+                    })
+                    .collect();
+
+                // Normalize Option<String> to String (empty if none)
+                let result_map_with_origins = result_map_with_origins
+                    .into_iter()
+                    .map(|(hash, (n, results, origin_opt))| {
+                        (hash, (n, results, origin_opt.unwrap_or_default()))
+                    })
+                    .collect();
+
+                // Send to ClientReplyHandler (single argument variant)
+                self.client_reply_tx
+                    .send(ClientReplyCommand::ByzCommitAckWithOrigins(
+                        result_map_with_origins,
+                        self.stats.i_am_leader,
+                    ))
                     .await
                     .unwrap();
 

@@ -11,10 +11,14 @@ use futures::{future::BoxFuture, stream::FuturesOrdered, StreamExt as _};
 use log::{debug, error, info, trace, warn};
 use tokio::sync::{mpsc::UnboundedSender, oneshot, Mutex};
 
+use crate::crypto::HashType;
 use crate::{
     config::AtomicConfig,
     crypto::{CachedBlock, CryptoServiceConnector},
-    proto::consensus::{ProtoQuorumCertificate, ProtoSignatureArrayEntry, ProtoVote},
+    proto::consensus::{
+        ProtoForkValidation, ProtoQuorumCertificate, ProtoSignatureArrayEntry, ProtoTipCut,
+        ProtoTipCutValidation, ProtoVote,
+    },
     rpc::{client::PinnedClient, SenderType},
     utils::{
         channel::{Receiver, Sender},
@@ -28,6 +32,7 @@ use super::{
     batch_proposal::BatchProposerCommand,
     block_broadcaster::BlockBroadcasterCommand,
     block_sequencer::BlockSequencerControlCommand,
+    block_tipcut::BlockOrTipCut,
     client_reply::ClientReplyCommand,
     extra_2pc::{EngraftActionAfterFutureDone, EngraftTwoPCFuture, TwoPCCommand},
     fork_receiver::{AppendEntriesStats, ForkReceiverCommand},
@@ -35,9 +40,32 @@ use super::{
     pacemaker::PacemakerCommand,
 };
 
+#[cfg(feature = "dag")]
+use crate::{
+    consensus::dag::{
+        block_broadcaster::DagBlockBroadcasterCommand,
+        block_sequencer::DagBlockSequencerCommand,
+        lane_logserver::LaneLogServerQuery,
+        sort::{fetch_and_sort_tipcut_blocks, TipCutSortError},
+        tip_cut_proposal::TipCutProposalCommand,
+    },
+    crypto::CachedTipCut,
+    proto::consensus::ProtoBlockCar,
+    utils::channel::make_channel,
+};
+
 pub(super) mod fork_choice;
 pub(super) mod steady_state;
 pub(super) mod view_change;
+
+// DAG-only exec batch cache entry; module-level to be used by Staging
+#[cfg(feature = "dag")]
+#[derive(Clone, Debug)]
+pub(super) struct ExecBatch {
+    pub tipcut: CachedTipCut,
+    pub blocks: Vec<CachedBlock>,
+    pub origins: HashMap<HashType, String>, // hash -> origin node
+}
 
 struct CachedBlockWithVotes {
     block: CachedBlock,
@@ -49,14 +77,48 @@ struct CachedBlockWithVotes {
     fast_qc_is_proposed: bool,
 }
 
+pub struct CachedWithVotes {
+    block_or_tc: BlockOrTipCut,
+    vote_sigs: HashMap<String, ProtoSignatureArrayEntry>,
+    replication_set: HashSet<String>,
+    qc_is_proposed: bool,
+    fast_qc_is_proposed: bool,
+}
+
+impl From<CachedWithVotes> for CachedBlockWithVotes {
+    fn from(cached: CachedWithVotes) -> Self {
+        match cached.block_or_tc {
+            BlockOrTipCut::Block(block) => Self {
+                block,
+                vote_sigs: cached.vote_sigs,
+                replication_set: cached.replication_set,
+                qc_is_proposed: cached.qc_is_proposed,
+                fast_qc_is_proposed: cached.fast_qc_is_proposed,
+            },
+            #[cfg(feature = "dag")]
+            BlockOrTipCut::TipCut(_) => {
+                panic!("Cannot convert TipCut to CachedBlockWithVotes")
+            }
+        }
+    }
+}
+
 pub type VoteWithSender = (SenderType /* Sender */, ProtoVote);
 pub type SignatureWithBlockN = (
     u64, /* Block the QC was attached to */
     ProtoSignatureArrayEntry,
 );
 
+/// Reperesent a fork or tip cut received for consensus voting
+pub struct Proposal {
+    pub entry: BlockOrTipCut,
+    pub storage_ack: oneshot::Receiver<StorageAck>,
+    pub ae_stats: AppendEntriesStats,
+    pub this_is_final: bool,
+}
+
 /// This is where all the consensus decisions are made.
-/// Feeds in blocks from block_broadcaster
+/// Feeds in blocks from block_broadcaster (or tip cuts in DAG mode)
 /// Waits for vote / Sends vote.
 /// Whatever makes it to this stage must have been properly verified before.
 /// So this stage will not bother about checking cryptographic validity.
@@ -71,22 +133,22 @@ pub struct Staging {
     view_is_stable: bool,
     config_num: u64,
     last_qc: Option<ProtoQuorumCertificate>,
-    curr_parent_for_pending: Option<CachedBlock>,
+    curr_parent_for_pending: Option<BlockOrTipCut>,
 
-    /// Invariant: pending_blocks.len() == 0 || bci == pending_blocks.front().n - 1
-    pending_blocks: VecDeque<CachedBlockWithVotes>,
+    /// pending_votes holds blocks or tip cuts waiting on commit
+    /// Invariant: pending_votes.len() == 0 || bci == pending_votes.front().n - 1
+    pending_votes: VecDeque<CachedWithVotes>,
+    /// pending_exec_blocks holds committed blocks waiting on execution
+    /// In traditional mode, these come directly from pending_votes
+    /// In DAG mode, these come from tip cut sort processing
+    pending_exec_blocks: VecDeque<CachedBlockWithVotes>,
 
     /// Signed votes for blocks in pending_blocks
     pending_signatures: VecDeque<SignatureWithBlockN>,
 
     view_change_timer: Arc<Pin<Box<ResettableTimer>>>,
 
-    block_rx: Receiver<(
-        CachedBlock,
-        oneshot::Receiver<StorageAck>,
-        AppendEntriesStats,
-        bool, /* this_is_final_block */
-    )>,
+    block_rx: Receiver<Proposal>,
     vote_rx: Receiver<VoteWithSender>,
     pacemaker_rx: Receiver<PacemakerCommand>,
     pacemaker_tx: Sender<PacemakerCommand>,
@@ -95,6 +157,7 @@ pub struct Staging {
     app_tx: Sender<AppCommand>,
     block_broadcaster_command_tx: Sender<BlockBroadcasterCommand>,
     block_sequencer_command_tx: Sender<BlockSequencerControlCommand>,
+    // TODO: What should this channel point to in DAG mode? Probably tip cut proposer?
     batch_proposer_command_tx: Sender<BatchProposerCommand>,
     fork_receiver_command_tx: Sender<ForkReceiverCommand>,
     qc_tx: UnboundedSender<ProtoQuorumCertificate>,
@@ -112,6 +175,33 @@ pub struct Staging {
 
     #[cfg(feature = "extra_2pc")]
     engraft_2pc_futures_rx: Receiver<EngraftActionAfterFutureDone>,
+
+    // DAG-only fields for tip cut sorting and block fetching
+    #[cfg(feature = "dag")]
+    lane_logserver_query_tx: Sender<LaneLogServerQuery>,
+    #[cfg(feature = "dag")]
+    last_lane_seq: HashMap<String, u64>,
+    #[cfg(feature = "dag")]
+    tip_cut_proposer_command_tx: Sender<TipCutProposalCommand>,
+    #[cfg(feature = "dag")]
+    dag_block_sequencer_command_tx: Sender<DagBlockSequencerCommand>,
+    #[cfg(feature = "dag")]
+    dag_block_broadcaster_command_tx: Sender<DagBlockBroadcasterCommand>,
+
+    // DAG-only: per-lane in-memory block cache to avoid runtime lane logserver queries
+    #[cfg(feature = "dag")]
+    per_lane_block_cache: HashMap<String, HashMap<u64, CachedBlock>>,
+    // DAG-only: last committed seq per lane (watermark)
+    #[cfg(feature = "dag")]
+    last_committed_lane_seq: HashMap<String, u64>,
+    // DAG-only: receive cache updates for lane blocks directly from LaneStaging/BlockBroadcaster
+    #[cfg(feature = "dag")]
+    lane_cache_rx: Receiver<(String /* lane_id */, CachedBlock)>,
+
+    // DAG-only: execution cache of sorted blocks per committed tipcut
+    // Ensures we reuse sort results and preserve tipcut boundaries between crash and byz commit
+    #[cfg(feature = "dag")]
+    exec_batches: VecDeque<ExecBatch>,
 }
 
 impl Staging {
@@ -119,12 +209,7 @@ impl Staging {
         config: AtomicConfig,
         client: PinnedClient,
         crypto: CryptoServiceConnector,
-        block_rx: Receiver<(
-            CachedBlock,
-            oneshot::Receiver<StorageAck>,
-            AppendEntriesStats,
-            bool, /* this_is_final_block */
-        )>,
+        block_rx: Receiver<Proposal>,
         vote_rx: Receiver<VoteWithSender>,
         pacemaker_rx: Receiver<PacemakerCommand>,
         pacemaker_tx: Sender<PacemakerCommand>,
@@ -136,6 +221,13 @@ impl Staging {
         qc_tx: UnboundedSender<ProtoQuorumCertificate>,
         batch_proposer_command_tx: Sender<BatchProposerCommand>,
         logserver_tx: Sender<LogServerCommand>,
+        #[cfg(feature = "dag")] lane_logserver_query_tx: Sender<LaneLogServerQuery>,
+        #[cfg(feature = "dag")] tip_cut_proposer_command_tx: Sender<TipCutProposalCommand>,
+        #[cfg(feature = "dag")] dag_block_sequencer_command_tx: Sender<DagBlockSequencerCommand>,
+        #[cfg(feature = "dag")] dag_block_broadcaster_command_tx: Sender<
+            DagBlockBroadcasterCommand,
+        >,
+        #[cfg(feature = "dag")] lane_cache_rx: Receiver<(String, CachedBlock)>,
 
         #[cfg(feature = "extra_2pc")] two_pc_command_tx: Sender<TwoPCCommand>,
 
@@ -175,7 +267,8 @@ impl Staging {
             last_qc: None,
             curr_parent_for_pending: None,
             config_num: 1,
-            pending_blocks: VecDeque::with_capacity(_chan_depth),
+            pending_votes: VecDeque::with_capacity(_chan_depth),
+            pending_exec_blocks: VecDeque::with_capacity(_chan_depth),
             pending_signatures: VecDeque::with_capacity(_chan_depth),
             view_change_timer,
             block_rx,
@@ -192,9 +285,28 @@ impl Staging {
             leader_perf_counter_unsigned,
             batch_proposer_command_tx,
             logserver_tx,
+            #[cfg(feature = "dag")]
+            lane_logserver_query_tx,
+            #[cfg(feature = "dag")]
+            tip_cut_proposer_command_tx,
+            #[cfg(feature = "dag")]
+            dag_block_sequencer_command_tx,
+            #[cfg(feature = "dag")]
+            dag_block_broadcaster_command_tx,
+
             __vc_retry_num: 0,
             __storage_ack_buffer: VecDeque::new(),
             __ae_seen_in_this_view: 0,
+            #[cfg(feature = "dag")]
+            last_lane_seq: HashMap::new(),
+            #[cfg(feature = "dag")]
+            per_lane_block_cache: HashMap::new(),
+            #[cfg(feature = "dag")]
+            last_committed_lane_seq: HashMap::new(),
+            #[cfg(feature = "dag")]
+            lane_cache_rx,
+            #[cfg(feature = "dag")]
+            exec_batches: VecDeque::new(),
 
             #[cfg(feature = "extra_2pc")]
             two_pc_command_tx,
@@ -240,72 +352,167 @@ impl Staging {
     async fn worker(&mut self) -> Result<(), ()> {
         let i_am_leader = self.i_am_leader();
 
-        #[cfg(feature = "extra_2pc")]
-        tokio::select! {
-            _tick = self.view_change_timer.wait() => {
-                self.handle_view_change_timer_tick().await?;
-            },
-            block = self.block_rx.recv() => {
-                if block.is_none() {
-                    return Err(())
-                }
-                let (block, storage_ack, ae_stats, this_is_final_block) = block.unwrap();
-                trace!("Got block {}", block.block.n);
-                if i_am_leader {
-                    self.process_block_as_leader(block, storage_ack, ae_stats, this_is_final_block).await?;
-                } else {
-                    // TODO: Send in bulk.
-                    self.process_block_as_follower(block, storage_ack, ae_stats, this_is_final_block).await?;
-                }
-            },
-            vote = self.vote_rx.recv() => {
-                if vote.is_none() {
-                    return Err(())
-                }
-                let vote = vote.unwrap();
-                if i_am_leader {
-                    let (sender_name, _) = vote.0.to_name_and_sub_id();
-                    self.verify_and_process_vote(sender_name, vote.1).await?;
-                } else {
-                    warn!("Received vote while being a follower");
-                }
-            },
-            cmd = self.pacemaker_rx.recv() => {
-                if cmd.is_none() {
-                    return Err(())
-                }
-                let cmd = cmd.unwrap();
-                self.process_view_change_message(cmd).await?;
-            },
+        #[cfg(not(feature = "dag"))]
+        {
+            #[cfg(feature = "extra_2pc")]
+            tokio::select! {
+                _tick = self.view_change_timer.wait() => {
+                    self.handle_view_change_timer_tick().await?;
+                },
+                // DAG: process one lane cache event per iteration
+                // #[cfg(feature = "dag")]
+                lane_cache = self.lane_cache_rx.recv() => {
+                    match lane_cache {
+                        Some((lane_id, block)) => {
+                            debug!("[DAG STAGING] lane_cache_event: lane={} n={} txs={}", lane_id, block.block.n, block.block.tx_list.len());
+                            self.cache_insert_block(&lane_id, &block);
+                        }
+                        None => {
+                            warn!("[DAG STAGING] lane_cache_channel_closed");
+                            return Err(())
+                        }
+                    }
+                },
+                msg = self.block_rx.recv() => {
+                    if msg.is_none() {
+                        return Err(())
+                    }
+                    let proposal = msg.unwrap();
+                    if i_am_leader {
+                        self.process_btc_as_leader(
+                            proposal.entry,
+                            proposal.storage_ack,
+                            proposal.ae_stats,
+                            proposal.this_is_final
+                        ).await?;
+                    } else {
+                        self.process_btc_as_follower(
+                            proposal.entry,
+                            proposal.storage_ack,
+                            proposal.ae_stats,
+                            proposal.this_is_final
+                        ).await?;
+                    }
+                },
+                vote = self.vote_rx.recv() => {
+                    if vote.is_none() {
+                        return Err(())
+                    }
+                    let vote = vote.unwrap();
+                    if i_am_leader {
+                        let (sender_name, _) = vote.0.to_name_and_sub_id();
+                        self.verify_and_process_vote(sender_name, vote.1).await?;
+                    } else {
+                        warn!("Received vote while being a follower");
+                    }
+                },
+                cmd = self.pacemaker_rx.recv() => {
+                    if cmd.is_none() {
+                        return Err(())
+                    }
+                    let cmd = cmd.unwrap();
+                    self.process_view_change_message(cmd).await?;
+                },
 
-            two_pc_fut = self.engraft_2pc_futures_rx.recv() => {
-                if two_pc_fut.is_none() {
-                    error!("2PC future is none");
-                    return Ok(())
-                }
-                trace!("Processing 2PC future");
-                let cmd = two_pc_fut.unwrap();
+                two_pc_fut = self.engraft_2pc_futures_rx.recv() => {
+                    if two_pc_fut.is_none() {
+                        error!("2PC future is none");
+                        return Ok(())
+                    }
+                    trace!("Processing 2PC future");
+                    let cmd = two_pc_fut.unwrap();
 
-                self.process_2pc_result(cmd).await?;
-            },
+                    self.process_2pc_result(cmd).await?;
+                },
+            }
+
+            #[cfg(not(feature = "extra_2pc"))]
+            tokio::select! {
+                _tick = self.view_change_timer.wait() => {
+                    self.handle_view_change_timer_tick().await?;
+                },
+                msg = self.block_rx.recv() => {
+                    if msg.is_none() {
+                        return Err(())
+                    }
+                    let proposal = msg.unwrap();
+                    if i_am_leader {
+                        self.process_btc_as_leader(
+                            proposal.entry,
+                            proposal.storage_ack,
+                            proposal.ae_stats,
+                            proposal.this_is_final
+                        ).await?;
+                    } else {
+                        self.process_btc_as_follower(
+                            proposal.entry,
+                            proposal.storage_ack,
+                            proposal.ae_stats,
+                            proposal.this_is_final
+                        ).await?;
+                    }
+                },
+                vote = self.vote_rx.recv() => {
+                    if vote.is_none() {
+                        return Err(())
+                    }
+                    let vote = vote.unwrap();
+                    if i_am_leader {
+                        let (sender_name, _) = vote.0.to_name_and_sub_id();
+                        self.verify_and_process_vote(sender_name, vote.1).await?;
+                    } else {
+                        warn!("Received vote while being a follower");
+                    }
+                },
+                cmd = self.pacemaker_rx.recv() => {
+                    if cmd.is_none() {
+                        return Err(())
+                    }
+                    let cmd = cmd.unwrap();
+                    self.process_view_change_message(cmd).await?;
+                },
+            }
         }
 
-        #[cfg(not(feature = "extra_2pc"))]
+        // FIXME: No extra 2pc on dag mode right now
+        #[cfg(feature = "dag")]
         tokio::select! {
             _tick = self.view_change_timer.wait() => {
                 self.handle_view_change_timer_tick().await?;
             },
-            block = self.block_rx.recv() => {
-                if block.is_none() {
+            // DAG: process one lane cache event per iteration
+            // #[cfg(feature = "dag")]
+            lane_cache = self.lane_cache_rx.recv() => {
+                match lane_cache {
+                    Some((lane_id, block)) => {
+                        debug!("[DAG STAGING] lane_cache_event: lane={} n={} txs={}", lane_id, block.block.n, block.block.tx_list.len());
+                        self.cache_insert_block(&lane_id, &block);
+                    }
+                    None => {
+                        warn!("[DAG STAGING] lane_cache_channel_closed");
+                        return Err(())
+                    }
+                }
+            },
+            msg = self.block_rx.recv() => {
+                if msg.is_none() {
                     return Err(())
                 }
-                let (block, storage_ack, ae_stats, this_is_final_block) = block.unwrap();
-                trace!("Got block {}", block.block.n);
+                let proposal = msg.unwrap();
                 if i_am_leader {
-                    self.process_block_as_leader(block, storage_ack, ae_stats, this_is_final_block).await?;
+                    self.process_btc_as_leader(
+                        proposal.entry,
+                        proposal.storage_ack,
+                        proposal.ae_stats,
+                        proposal.this_is_final
+                    ).await?;
                 } else {
-                    // TODO: Send in bulk.
-                    self.process_block_as_follower(block, storage_ack, ae_stats, this_is_final_block).await?;
+                    self.process_btc_as_follower(
+                        proposal.entry,
+                        proposal.storage_ack,
+                        proposal.ae_stats,
+                        proposal.this_is_final
+                    ).await?;
                 }
             },
             vote = self.vote_rx.recv() => {
@@ -330,5 +537,175 @@ impl Staging {
         }
 
         Ok(())
+    }
+
+    // --------------- DAG-only helpers for Phase 1 -----------------
+
+    #[cfg(feature = "dag")]
+    fn cache_insert_block(&mut self, lane_id: &str, block: &CachedBlock) {
+        let entry = self
+            .per_lane_block_cache
+            .entry(lane_id.to_string())
+            .or_insert_with(HashMap::new);
+        let prev = entry.insert(block.block.n, block.clone());
+        if prev.is_some() {
+            warn!(
+                "[DAG STAGING] cache_overwrite: lane={} n={}",
+                lane_id, block.block.n
+            );
+        } else {
+            debug!(
+                "[DAG STAGING] cache_insert: lane={} n={} hash_len={}",
+                lane_id,
+                block.block.n,
+                block.block_hash.len()
+            );
+        }
+    }
+
+    #[cfg(feature = "dag")]
+    fn cache_get_block(&self, lane_id: &str, n: u64) -> Option<CachedBlock> {
+        self.per_lane_block_cache
+            .get(lane_id)
+            .and_then(|m| m.get(&n).cloned())
+    }
+
+    // lane cache updates are handled as events in worker's select
+
+    /// DAG-only: Build inputs and call the sorter for a committed tip cut.
+    /// Returns sorted blocks and origin map. Does not execute or update commit indices.
+    #[cfg(feature = "dag")]
+    pub async fn dag_fetch_and_sort_tipcut(
+        &mut self,
+        tipcut: &ProtoTipCut,
+    ) -> Result<(Vec<CachedBlock>, HashMap<HashType, String>), TipCutSortError> {
+        debug!(
+            "[DAG STAGING] sort_tipcut: n={} tips={}",
+            tipcut.n,
+            tipcut.tips.len()
+        );
+        // Build cars map keyed by origin_node (serves as lane_id)
+        let mut cars: HashMap<String, ProtoBlockCar> = HashMap::new();
+        for car in &tipcut.tips {
+            cars.insert(car.origin_node.clone(), car.clone());
+        }
+
+        let last_lane_seq = &self.last_lane_seq;
+        let cache = self.per_lane_block_cache.clone();
+
+        // Fetch function retrieves from cache only; lane staging will backfill and populate cache
+        let fetch = move |lane: &str, seq: u64| {
+            let lane_id = lane.to_string();
+            let cache = cache.clone();
+            async move {
+                if let Some(map) = cache.get(&lane_id) {
+                    if let Some(block) = map.get(&seq) {
+                        debug!("[DAG STAGING] cache_hit: lane={} n={}", lane_id, seq);
+                        return Some(block.clone());
+                    }
+                }
+                debug!("[DAG STAGING] cache_miss: lane={} n={}", lane_id, seq);
+                None
+            }
+        };
+
+        fetch_and_sort_tipcut_blocks(&cars, last_lane_seq, fetch).await
+    }
+
+    /// DAG-only: Create and append an ExecBatch for a tipcut after sorting, caching results for reuse.
+    #[cfg(feature = "dag")]
+    fn dag_append_exec_batch(
+        &mut self,
+        tipcut: CachedTipCut,
+        blocks: Vec<CachedBlock>,
+        origins: HashMap<HashType, String>,
+    ) {
+        debug!(
+            "[DAG STAGING] exec_batch_append: tipcut_digest={} blocks={} origins={}",
+            hex::encode(tipcut.tipcut_hash.clone()),
+            blocks.len(),
+            origins.len()
+        );
+        let batch = ExecBatch {
+            tipcut,
+            blocks,
+            origins,
+        };
+        self.exec_batches.push_back(batch);
+    }
+
+    /// DAG-only: Build app payload from cached exec batches covering (old_idx, new_idx], preserving batch boundaries.
+    #[cfg(feature = "dag")]
+    fn dag_build_payload_from_cache(
+        &mut self,
+        old_ci: u64,
+        new_ci: u64,
+    ) -> (Vec<CachedBlock>, HashMap<HashType, String>) {
+        let mut blocks: Vec<CachedBlock> = Vec::new();
+        let mut origins: HashMap<HashType, String> = HashMap::new();
+        let mut retrieved_batches = 0;
+        let mut idx = old_ci + 1;
+
+        let mut exec_batch_iter = self.exec_batches.iter();
+
+        while let Some(batch) = exec_batch_iter.next() {
+            let batch_seq = batch.tipcut.tipcut.n;
+            // Only consume batches that advance beyond old_ci
+            if batch_seq <= old_ci {
+                debug!(
+                    "[DAG STAGING] exec_batch_skip: max_n<=old_ci max_n={} old_ci={}",
+                    batch_seq, old_ci
+                );
+                // self.exec_batches.pop_front();
+                // retrieved_batches += 1; // GC stale
+                continue;
+            }
+            // Stop when batch exceeds new_ci boundary (we don't interleave across tipcuts)
+            if batch_seq > new_ci {
+                debug!("[DAG STAGING] exec_batch_partial_boundary: batch_max_n={} new_ci={} (preserve tipcut boundary)", batch_seq, new_ci);
+                break;
+            }
+            // let batch = self.exec_batches.pop_front().unwrap();
+            retrieved_batches += 1;
+            debug!(
+                "[DAG STAGING] exec_batch_retrieved: tipcut_digest={} seq={} blocks={} origins={}",
+                hex::encode(batch.tipcut.tipcut_hash.clone()),
+                batch_seq,
+                batch.blocks.len(),
+                batch.origins.len()
+            );
+            for b in &batch.blocks {
+                blocks.push(b.clone());
+            }
+            for (h, o) in batch.origins.clone().into_iter() {
+                origins.entry(h).or_insert(o);
+            }
+        }
+
+        (blocks, origins)
+    }
+
+    /// DAG-only: Garbage collect exec batches up to but excluding ci
+    #[cfg(feature = "dag")]
+    fn dag_gc_exec_batches_up_to(&mut self, ci: u64) {
+        let mut gced = 0;
+        while let Some(batch) = self.exec_batches.front() {
+            if batch.tipcut.tipcut.n < ci {
+                debug!(
+                    "[DAG STAGING] exec_batch_gc: tipcut_digest={} max_n={} ci={}",
+                    hex::encode(batch.tipcut.tipcut_hash.clone()),
+                    batch.tipcut.tipcut.n,
+                    ci
+                );
+                self.exec_batches.pop_front();
+                gced += 1;
+            } else {
+                break;
+            }
+        }
+        debug!(
+            "[DAG STAGING] exec_batch_gc_done: up_to_ci={} batches_gced={}",
+            ci, gced
+        );
     }
 }

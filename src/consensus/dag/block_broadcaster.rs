@@ -1,0 +1,567 @@
+/// DAG Block Broadcaster
+///
+/// This component handles the dissemination layer for DAG-based consensus.
+/// Unlike the consensus-layer block_broadcaster, this component:
+/// - Broadcasts individual blocks via AppendBlock messages
+/// - Does NOT handle tip cut proposals (those go through consensus layer)
+/// - Works with BlockReceiver for block validation and storage
+/// - Operates independently of traditional fork-based consensus
+///
+/// Architecture:
+/// ```
+/// Worker Proposes Block
+///     ↓
+/// DAG BlockBroadcaster stores & broadcasts via AppendBlock
+///     ↓
+/// BlockReceiver validates & stores
+///     ↓
+/// LaneStaging acknowledges blocks, forms CARs
+/// ```
+use std::{
+    cell::RefCell,
+    io::{Error, ErrorKind},
+    sync::Arc,
+};
+
+use log::{debug, error, info, trace, warn};
+use prost::Message;
+use tokio::sync::{oneshot, Mutex};
+
+use crate::{
+    config::AtomicConfig,
+    consensus::BlockOrTipCut,
+    crypto::{CachedBlock, CryptoServiceConnector},
+    proto::{
+        consensus::{HalfSerializedBlock, ProtoAppendBlocks, ProtoBlockCar},
+        rpc::ProtoPayload,
+    },
+    rpc::{client::PinnedClient, server::LatencyProfile, PinnedMessage, SenderType},
+    utils::{
+        channel::{Receiver, Sender},
+        PerfCounter, StorageAck, StorageServiceConnector,
+    },
+};
+
+use super::{
+    super::app::AppCommand,
+    block_receiver::{AppendBlockStats, BlockReceiverCommand, MultiPartLane},
+};
+
+pub enum DagBlockBroadcasterCommand {
+    UpdateCI(u64),
+    /// Provide a lane prefix to be batched with the next locally proposed block
+    /// Mirrors traditional broadcaster's NextAEForkPrefix behavior
+    // TODO: Remove this if we never use it
+    NextAppendBlocksPrefix(Vec<oneshot::Receiver<Result<CachedBlock, Error>>>),
+}
+
+pub struct DagBlockBroadcaster {
+    config: AtomicConfig,
+    crypto: CryptoServiceConnector,
+
+    ci: u64,
+
+    // Accumulates a lane prefix to batch with the next proposed block
+    lane_prefix_buffer: Vec<CachedBlock>,
+
+    // Input ports
+    my_block_rx: Receiver<(u64, oneshot::Receiver<BlockOrTipCut>)>,
+    other_block_rx: Receiver<MultiPartLane>,
+    control_command_rx: Receiver<DagBlockBroadcasterCommand>,
+
+    // Output ports
+    storage: StorageServiceConnector,
+    client: PinnedClient,
+    lane_staging_tx: Sender<(
+        CachedBlock,
+        oneshot::Receiver<StorageAck>,
+        AppendBlockStats,
+        bool, /* this_is_final_block */
+    )>,
+    // Command ports
+    block_receiver_command_tx: Sender<BlockReceiverCommand>,
+    app_command_tx: Sender<AppCommand>,
+    // Piggyback: receive newly formed CARs to include in outgoing AppendBlocks
+    piggyback_car_rx: Receiver<ProtoBlockCar>,
+    // Local queue of CARs to piggyback
+    pending_cars: Vec<ProtoBlockCar>,
+
+    // Perf Counters
+    my_block_perf_counter: RefCell<PerfCounter<u64>>,
+}
+
+impl DagBlockBroadcaster {
+    pub fn new(
+        config: AtomicConfig,
+        client: PinnedClient,
+        crypto: CryptoServiceConnector,
+        my_block_rx: Receiver<(u64, oneshot::Receiver<BlockOrTipCut>)>,
+        other_block_rx: Receiver<MultiPartLane>,
+        control_command_rx: Receiver<DagBlockBroadcasterCommand>,
+        storage: StorageServiceConnector,
+        lane_staging_tx: Sender<(
+            CachedBlock,
+            oneshot::Receiver<StorageAck>,
+            AppendBlockStats,
+            bool,
+        )>,
+        block_receiver_command_tx: Sender<BlockReceiverCommand>,
+        app_command_tx: Sender<AppCommand>,
+        piggyback_car_rx: Receiver<ProtoBlockCar>,
+    ) -> Self {
+        let my_block_event_order = vec![
+            "Retrieve prepared block",
+            "Store block",
+            "Forward block to logserver",
+            "Forward block to staging",
+            "Serialize",
+            "Forward block to other nodes",
+        ];
+
+        let my_block_perf_counter = RefCell::new(PerfCounter::new(
+            "DagBlockBroadcasterMyBlock",
+            &my_block_event_order,
+        ));
+
+        Self {
+            config,
+            crypto,
+            ci: 0,
+            lane_prefix_buffer: Vec::new(),
+            my_block_rx,
+            other_block_rx,
+            control_command_rx,
+            storage,
+            client,
+            lane_staging_tx,
+            block_receiver_command_tx,
+            app_command_tx,
+            piggyback_car_rx,
+            pending_cars: Vec::new(),
+            my_block_perf_counter,
+        }
+    }
+
+    pub async fn run(broadcaster: Arc<Mutex<Self>>) {
+        let mut broadcaster = broadcaster.lock().await;
+
+        let mut total_work = 0;
+        loop {
+            if let Err(_e) = broadcaster.worker().await {
+                break;
+            }
+
+            total_work += 1;
+            if total_work % 1000 == 0 {
+                broadcaster.my_block_perf_counter.borrow().log_aggregate();
+            }
+        }
+
+        info!(
+            "DAG Block Broadcaster worker exited. Total work items processed: {}",
+            total_work
+        );
+    }
+
+    fn perf_register(&mut self, entry: u64) {
+        #[cfg(feature = "perf")]
+        self.my_block_perf_counter
+            .borrow_mut()
+            .register_new_entry(entry);
+    }
+
+    fn perf_add_event(&mut self, entry: u64, event: &str) {
+        #[cfg(feature = "perf")]
+        self.my_block_perf_counter
+            .borrow_mut()
+            .new_event(event, &entry);
+    }
+
+    fn perf_deregister(&mut self, entry: u64) {
+        #[cfg(feature = "perf")]
+        self.my_block_perf_counter
+            .borrow_mut()
+            .deregister_entry(&entry);
+    }
+
+    async fn worker(&mut self) -> Result<(), Error> {
+        // DAG dissemination layer worker
+        // Handles individual block storage and broadcasting
+        // Does NOT handle consensus proposals (forks/tipcuts)
+
+        tokio::select! {
+            block = self.my_block_rx.recv() => {
+                if block.is_none() {
+                    return Err(Error::new(ErrorKind::BrokenPipe, "my_block_rx channel closed"));
+                }
+                let block = block.unwrap();
+                let __n = block.0;
+
+                trace!("[DAG-DISSEMINATION] BlockBroadcaster received block {} from sequencer", __n);
+                let perf_entry = block.0;
+                self.perf_register(perf_entry);
+                let block = block.1.await;
+                self.perf_add_event(perf_entry, "Retrieve prepared block");
+                if block.is_err() {
+                    error!("Failed to get block {} {:?}", __n, block);
+                    return Ok(());
+                }
+                if let BlockOrTipCut::Block(b) = block.unwrap() {
+                    self.process_my_block(b).await?;
+                } else {
+                    error!("Expected block but got tipcut for block {}", __n);
+                    return Ok(());
+                }
+            },
+
+            lane_msg = self.other_block_rx.recv() => {
+                if lane_msg.is_none() {
+                    return Err(Error::new(ErrorKind::BrokenPipe, "other_block_rx channel closed"));
+                }
+                let lane = lane_msg.unwrap();
+                self.process_other_lane(lane).await?;
+            },
+
+            // Control channel is optional in DAG wiring; if it's closed, keep running without it
+            cmd = self.control_command_rx.recv() => {
+                if let Some(cmd) = cmd {
+                    self.handle_control_command(cmd).await?;
+                } else {
+                    warn!("DAG Block Broadcaster control channel closed; continuing without control commands");
+                }
+            },
+
+            // New: receive locally formed CARs to piggyback in future AppendBlocks
+            car = self.piggyback_car_rx.recv() => {
+                if let Some(car) = car {
+                    self.pending_cars.push(car);
+                    trace!("[DAG-DISSEMINATION] Queued piggyback CAR; pending_cars={}", self.pending_cars.len());
+                } else {
+                    warn!("Piggyback CAR channel closed; continuing without piggybacking");
+                }
+            }
+        }
+
+        Ok(())
+    }
+
+    fn get_everyone_except_me(&self) -> Vec<String> {
+        let config = self.config.get();
+        let me = &config.net_config.name;
+        let mut node_list = config
+            .consensus_config
+            .node_list
+            .iter()
+            .filter(|e| *e != me)
+            .map(|e| e.clone())
+            .collect::<Vec<_>>();
+
+        node_list.extend(
+            config
+                .consensus_config
+                .learner_list
+                .iter()
+                .map(|e| e.clone()),
+        );
+
+        node_list
+    }
+
+    async fn handle_control_command(
+        &mut self,
+        cmd: DagBlockBroadcasterCommand,
+    ) -> Result<(), Error> {
+        match cmd {
+            DagBlockBroadcasterCommand::UpdateCI(ci) => self.ci = ci,
+            DagBlockBroadcasterCommand::NextAppendBlocksPrefix(blocks) => {
+                for block_rx in blocks {
+                    match block_rx.await {
+                        Ok(Ok(block)) => self.lane_prefix_buffer.push(block),
+                        Ok(Err(e)) => {
+                            warn!("[DAG-DISSEMINATION] Prefix block verify failed: {:?}", e);
+                        }
+                        Err(e) => {
+                            warn!(
+                                "[DAG-DISSEMINATION] Failed to receive prefix block future: {:?}",
+                                e
+                            );
+                        }
+                    }
+                }
+            }
+        }
+
+        Ok(())
+    }
+
+    async fn store_and_forward_internally(
+        &mut self,
+        block: &CachedBlock,
+        block_stats: AppendBlockStats,
+        this_is_final_block: bool,
+    ) -> Result<(), Error> {
+        let perf_entry = block.block.n;
+
+        // Store
+        let storage_ack = self.storage.put_block(block).await;
+        self.perf_add_event(perf_entry, "Store block");
+
+        // Forward to staging (which is actually LaneStaging in DAG mode)
+        self.perf_add_event(perf_entry, "Forward block to logserver");
+
+        let lane_id_for_log = block_stats.lane_id.clone();
+        if let Err(e) = self
+            .lane_staging_tx
+            .send((block.clone(), storage_ack, block_stats, this_is_final_block))
+            .await
+        {
+            warn!(
+                "[DAG-DISSEMINATION] Failed to send block to LaneStaging: n={} err={:?}",
+                block.block.n, e
+            );
+            // Keep running; staging might be restarting. Do not panic.
+        } else {
+            debug!(
+                "[DAG-DISSEMINATION] Sent block to LaneStaging: n={} hash={} lane={} final={}",
+                block.block.n,
+                hex::encode(&block.block_hash),
+                lane_id_for_log,
+                this_is_final_block
+            );
+        }
+
+        self.perf_add_event(perf_entry, "Forward block to staging");
+
+        Ok(())
+    }
+
+    fn i_am_leader(&self, view: u64) -> bool {
+        let config = self.config.get();
+        let leader = config.consensus_config.get_leader_for_view(view);
+        leader == config.net_config.name
+    }
+
+    async fn process_my_block(&mut self, block: CachedBlock) -> Result<(), Error> {
+        trace!(
+            "[DAG-DISSEMINATION] BlockBroadcaster processing my block {}",
+            block.block.n
+        );
+        let perf_entry = block.block.n;
+
+        let (view, view_is_stable, config_num) = (
+            block.block.view,
+            block.block.view_is_stable,
+            block.block.config_num,
+        );
+
+        // Use own name as lane identifier
+        let lane_id = self.config.get().net_config.name.clone();
+
+        // Build a batched lane: prefix buffer + new block (mirrors traditional fork batching)
+        let mut lane_batch: Vec<CachedBlock> = Vec::new();
+        for b in self.lane_prefix_buffer.drain(..) {
+            lane_batch.push(b);
+        }
+        lane_batch.push(block.clone());
+
+        // Store and forward each block internally; mark only the last as final
+        let total = lane_batch.len();
+        for (idx, blk) in lane_batch.iter().enumerate() {
+            let is_last = idx + 1 == total;
+            self.store_and_forward_internally(
+                blk,
+                AppendBlockStats {
+                    view,
+                    view_is_stable: blk.block.view_is_stable,
+                    config_num,
+                    sender: self.config.get().net_config.name.clone(),
+                    ci: self.ci,
+                    lane_id: lane_id.clone(),
+                },
+                is_last,
+            )
+            .await?;
+        }
+
+        // Notify app for stats
+        if let Err(e) = self
+            .app_command_tx
+            .send(AppCommand::NewRequestBatch(
+                block.block.n,
+                view,
+                view_is_stable,
+                self.i_am_leader(view),
+                block.block.tx_list.len(),
+                block.block_hash.clone(),
+                true, /* is my lane */
+            ))
+            .await
+        {
+            warn!(
+                "[DAG-DISSEMINATION] Failed to send app stats for block {}: err={:?}",
+                block.block.n, e
+            );
+        }
+
+        // Broadcast batched blocks to all other nodes in a single AppendBlocks message
+        let names = self.get_everyone_except_me();
+        self.broadcast_blocks(
+            names,
+            lane_batch,
+            view,
+            view_is_stable,
+            config_num,
+            Some(perf_entry),
+        )
+        .await;
+
+        Ok(())
+    }
+
+    /// Process a multipart lane of verified blocks from BlockReceiver
+    async fn process_other_lane(&mut self, mut lane: MultiPartLane) -> Result<(), Error> {
+        trace!(
+            "[DAG-DISSEMINATION] BlockBroadcaster processing other lane from {}",
+            lane.ab_stats.lane_id
+        );
+        // Await all futures into concrete blocks
+        let mut blocks: Vec<CachedBlock> = Vec::new();
+        for fut_opt in lane.lane_future.iter_mut() {
+            if let Some(fut) = fut_opt.take() {
+                match fut.await {
+                    Ok(Ok(block)) => blocks.push(block),
+                    Ok(Err(e)) => {
+                        error!("Failed to verify lane block: {:?}", e);
+                        return Ok(());
+                    }
+                    Err(e) => {
+                        error!("Failed to receive lane block future: {:?}", e);
+                        return Ok(());
+                    }
+                }
+            }
+        }
+
+        // Store and forward each block internally; only mark the last as final
+        let total = blocks.len();
+        for (idx, blk) in blocks.into_iter().enumerate() {
+            let is_last = idx + 1 == total;
+            self.store_and_forward_internally(&blk, lane.ab_stats.clone(), is_last)
+                .await?;
+
+            // Forward to app for stats
+            if let Err(e) = self
+                .app_command_tx
+                .send(AppCommand::NewRequestBatch(
+                    blk.block.n,
+                    lane.ab_stats.view,
+                    lane.ab_stats.view_is_stable,
+                    self.i_am_leader(lane.ab_stats.view),
+                    blk.block.tx_list.len(),
+                    blk.block_hash.clone(),
+                    false,
+                ))
+                .await
+            {
+                warn!(
+                    "[DAG-DISSEMINATION] Failed to send app stats for other-lane block {}: err={:?}",
+                    blk.block.n, e
+                );
+            }
+        }
+
+        Ok(())
+    }
+
+    /// Broadcast a batch of blocks as a single AppendBlocks message
+    async fn broadcast_blocks(
+        &mut self,
+        names: Vec<String>,
+        mut blocks: Vec<CachedBlock>,
+        view: u64,
+        view_is_stable: bool,
+        config_num: u64,
+        perf_entry: Option<u64>,
+    ) {
+        // Piggyback CARs are accumulated in the worker loop into pending_cars
+        let (should_perf, perf_entry) = match perf_entry {
+            Some(e) => (true, e),
+            None => (false, 0),
+        };
+
+        let serialized_blocks: Vec<HalfSerializedBlock> = blocks
+            .drain(..)
+            .map(|b| HalfSerializedBlock {
+                n: b.block.n,
+                view: b.block.view,
+                view_is_stable: b.block.view_is_stable,
+                config_num: b.block.config_num,
+                serialized_body: b.block_ser.clone(),
+            })
+            .collect();
+
+        let cars = self.pending_cars.drain(..).collect::<Vec<_>>();
+
+        let append_blocks = ProtoAppendBlocks {
+            serialized_blocks,
+            commit_index: self.ci,
+            view,
+            view_is_stable,
+            config_num,
+            is_backfill_response: false,
+            cars,
+        };
+
+        let rpc = ProtoPayload {
+            message: Some(crate::proto::rpc::proto_payload::Message::AppendBlocks(
+                append_blocks,
+            )),
+        };
+        let data = rpc.encode_to_vec();
+
+        if should_perf {
+            self.perf_add_event(perf_entry, "Serialize");
+        }
+
+        let sz = data.len();
+        trace!(
+            "AppendBlocks batch size: {} Broadcasting to {:?}",
+            sz,
+            names
+        );
+        let data = PinnedMessage::from(data, sz, SenderType::Anon);
+        let mut profile = LatencyProfile::new();
+        let _res = PinnedClient::broadcast(
+            &self.client,
+            &names,
+            &data,
+            &mut profile,
+            self.get_car_broadcast_threshold(),
+        )
+        .await;
+
+        if should_perf {
+            self.perf_add_event(perf_entry, "Forward block to other nodes");
+            self.perf_deregister(perf_entry);
+        }
+    }
+
+    fn get_car_broadcast_threshold(&self) -> usize {
+        let config = self.config.get();
+        let node_list_len = config.consensus_config.node_list.len();
+
+        // If using platforms, we need u+1 nodes to accept the CAR.
+        #[cfg(feature = "platforms")]
+        {
+            if node_list_len <= config.consensus_config.liveness_u as usize {
+                return 0;
+            }
+            let car_threshold = config.consensus_config.liveness_u as usize;
+            return car_threshold + 1;
+        }
+
+        // Default: f+1
+        let f = node_list_len / 3;
+        return f + 1;
+    }
+}

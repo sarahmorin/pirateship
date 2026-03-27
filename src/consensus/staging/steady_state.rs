@@ -12,17 +12,20 @@ use crate::{
         logserver::LogServerCommand,
         pacemaker::PacemakerCommand,
     },
-    crypto::{CachedBlock, DIGEST_LENGTH},
+    crypto::{CachedBlock, HashType},
     proto::{
         consensus::{
             proto_block::Sig, ProtoNameWithSignature, ProtoQuorumCertificate,
-            ProtoSignatureArrayEntry, ProtoVote,
+            ProtoSignatureArrayEntry, ProtoTipCut, ProtoVote,
         },
         rpc::ProtoPayload,
     },
     rpc::{client::PinnedClient, PinnedMessage, SenderType},
     utils::StorageAck,
 };
+
+#[cfg(feature = "dag")]
+use crate::{consensus::dag::lane_staging, crypto::CachedTipCut};
 
 use super::{
     super::{
@@ -32,7 +35,7 @@ use super::{
         client_reply::ClientReplyCommand,
         fork_receiver::{AppendEntriesStats, ForkReceiverCommand},
     },
-    CachedBlockWithVotes, Staging,
+    BlockOrTipCut, CachedBlockWithVotes, CachedWithVotes, Staging,
 };
 
 impl Staging {
@@ -42,6 +45,7 @@ impl Staging {
         leader == config.net_config.name
     }
 
+    // TODO: Update perf stats to include tip cuts.
     fn perf_register_block(&self, block: &CachedBlock) {
         #[cfg(feature = "perf")]
         if let Some(Sig::ProposerSig(_)) = block.block.sig {
@@ -55,6 +59,7 @@ impl Staging {
         }
     }
 
+    // TODO: Update perf stats to include tip cuts.
     fn perf_deregister_block(&self, block: &CachedBlock) {
         #[cfg(feature = "perf")]
         if let Some(Sig::ProposerSig(_)) = block.block.sig {
@@ -68,6 +73,7 @@ impl Staging {
         }
     }
 
+    // TODO: Update perf stats to include tip cuts.
     #[cfg(feature = "perf")]
     fn perf_add_event(
         &self,
@@ -87,9 +93,11 @@ impl Staging {
         }
     }
 
+    // TODO: Update perf stats to include tip cuts.
     #[cfg(not(feature = "perf"))]
     fn perf_add_event(&self, _block: &CachedBlock, _event: &str) {}
 
+    // TODO: Update perf stats to include tip cuts.
     fn perf_add_event_from_perf_stats(&self, signed: bool, block_n: u64, event: &str) {
         #[cfg(feature = "perf")]
         if signed {
@@ -143,35 +151,36 @@ impl Staging {
     /// Either block.n === last block of pending_blocks + 1 and the hash link matches.
     /// Or block.n is in pending blocks, so it's hash must be present.
     /// Or block.n <= self.bci, so we can return false and safely ignore doing anything with this block.
-    fn check_continuity(&self, block: &CachedBlock) -> bool {
-        if self.pending_blocks.len() == 0 {
+    fn check_continuity(&self, btc: &BlockOrTipCut) -> bool {
+        let n = btc.n();
+        if self.pending_votes.len() == 0 {
             if self.curr_parent_for_pending.is_none() {
-                return block.block.n == 1;
+                return n == 1;
             } else {
-                let parent = &block.block.parent;
-                return parent.eq(&self.curr_parent_for_pending.as_ref().unwrap().block_hash)
-                    && block.block.n == self.curr_parent_for_pending.as_ref().unwrap().block.n + 1;
+                let parent = btc.parent();
+
+                return parent.eq(&self.curr_parent_for_pending.as_ref().unwrap().digest())
+                    && n == self.curr_parent_for_pending.as_ref().unwrap().n() + 1;
             }
         }
 
-        let last_block = self.pending_blocks.back().unwrap();
-        let first_block = self.pending_blocks.front().unwrap();
+        let last_entry = self.pending_votes.back().unwrap();
+        let first_entry = self.pending_votes.front().unwrap();
 
-        if block.block.n > last_block.block.block.n + 1 {
+        if n > last_entry.block_or_tc.n() + 1 {
             return false;
         }
-
-        if block.block.n < first_block.block.block.n {
+        if n < first_entry.block_or_tc.n() {
             return false;
         }
-
-        if block.block.n == last_block.block.block.n + 1 {
-            return block.block.parent.eq(&last_block.block.block_hash);
+        if n == last_entry.block_or_tc.n() + 1 {
+            let parent = btc.parent();
+            return parent.eq(&last_entry.block_or_tc.digest());
         }
 
-        self.pending_blocks
+        self.pending_votes
             .iter()
-            .any(|b| b.block.block.n == block.block.n && b.block.block_hash.eq(&block.block_hash))
+            .any(|b| b.block_or_tc.n() == n && b.block_or_tc.digest().eq(&btc.digest()))
     }
 
     pub(super) async fn handle_view_change_timer_tick(&mut self) -> Result<(), ()> {
@@ -215,13 +224,13 @@ impl Staging {
         Ok(())
     }
 
-    async fn vote_on_last_block_for_self(
+    async fn vote_on_last_btc_for_self(
         &mut self,
         storage_ack: oneshot::Receiver<StorageAck>,
     ) -> Result<(), ()> {
         let name = self.config.get().net_config.name.clone();
 
-        let last_block = match self.pending_blocks.back() {
+        let last_btc = match self.pending_votes.back() {
             Some(b) => b,
             None => return Err(()),
         };
@@ -233,30 +242,32 @@ impl Staging {
         }
         let _ = storage_ack.await.unwrap();
 
-        self.perf_add_event(&last_block.block, "Storage");
+        // FIXME: Handle tip cuts here.
+        // self.perf_add_event(&last_btc.block, "Storage");
 
         let mut vote = ProtoVote {
             sig_array: Vec::with_capacity(1),
-            fork_digest: last_block.block.block_hash.clone(),
-            n: last_block.block.block.n,
+            digest: last_btc.block_or_tc.digest(),
+            n: last_btc.block_or_tc.n(),
             view: self.view,
             config_num: self.config_num,
         };
 
         #[cfg(feature = "extra_2pc")]
-        let (_vote_n, _vote_view, _vote_digest) = (vote.n, vote.view, vote.fork_digest.clone());
+        let (_vote_n, _vote_view, _vote_digest) = (vote.n, vote.view, vote.digest.clone());
 
         // If this block is signed, need a signature for the vote.
-        if let Some(Sig::ProposerSig(_)) = last_block.block.block.sig {
-            let vote_sig = self.crypto.sign(&last_block.block.block_hash).await;
+        if let Some(_) = last_btc.block_or_tc.sig() {
+            let vote_sig = self.crypto.sign(&last_btc.block_or_tc.digest()).await;
 
             vote.sig_array.push(ProtoSignatureArrayEntry {
-                n: last_block.block.block.n,
+                n: last_btc.block_or_tc.n(),
                 sig: vote_sig.to_vec(),
             });
         }
 
-        self.perf_add_event(&last_block.block, "Vote to Self");
+        // FIXME: Handle tip cuts here.
+        // self.perf_add_event(&last_block.block, "Vote to Self");
 
         #[cfg(feature = "extra_2pc")]
         {
@@ -306,11 +317,11 @@ impl Staging {
         }
     }
 
-    async fn send_vote_on_last_block_to_leader(
+    async fn send_vote_on_last_btc_to_leader(
         &mut self,
         storage_ack: oneshot::Receiver<StorageAck>,
     ) -> Result<(), ()> {
-        let last_block = match self.pending_blocks.back() {
+        let last_btc = match self.pending_votes.back() {
             Some(b) => b,
             None => return Err(()),
         };
@@ -324,7 +335,7 @@ impl Staging {
 
         // I will resend all the signatures in pending_blocks that I have not received a QC for.
         // But only if the last block was signed.
-        let sig_array = if let Some(Sig::ProposerSig(_)) = last_block.block.block.sig {
+        let sig_array = if let Some(_) = last_btc.block_or_tc.sig() {
             self.pending_signatures
                 .iter()
                 .map(|(_, sig)| sig.clone())
@@ -335,26 +346,26 @@ impl Staging {
 
         let mut vote = ProtoVote {
             sig_array,
-            fork_digest: last_block.block.block_hash.clone(),
-            n: last_block.block.block.n,
+            digest: last_btc.block_or_tc.digest(),
+            n: last_btc.block_or_tc.n(),
             view: self.view,
             config_num: self.config_num,
         };
 
         #[cfg(feature = "extra_2pc")]
-        let (_vote_n, _vote_view, _vote_digest) = (vote.n, vote.view, vote.fork_digest.clone());
+        let (_vote_n, _vote_view, _vote_digest) = (vote.n, vote.view, vote.digest.clone());
 
         // If this block is signed, need a signature for the vote.
-        if let Some(Sig::ProposerSig(_)) = last_block.block.block.sig {
-            let vote_sig = self.crypto.sign(&last_block.block.block_hash).await;
+        if let Some(_) = last_btc.block_or_tc.sig() {
+            let vote_sig = self.crypto.sign(&last_btc.block_or_tc.digest()).await;
             let sig_entry = ProtoSignatureArrayEntry {
-                n: last_block.block.block.n,
+                n: last_btc.block_or_tc.n(),
                 sig: vote_sig.to_vec(),
             };
             vote.sig_array.push(sig_entry.clone());
 
             self.pending_signatures
-                .push_back((last_block.block.block.n, sig_entry));
+                .push_back((last_btc.block_or_tc.n(), sig_entry));
         }
 
         let leader = self
@@ -414,10 +425,10 @@ impl Staging {
             let _ = PinnedClient::send(&self.client, &leader, data.as_ref()).await;
             // .unwrap();
 
-            if last_block.block.block.view_is_stable {
-                trace!("Sent vote to {} for {}", leader, last_block.block.block.n);
+            if last_btc.block_or_tc.view_is_stable() {
+                trace!("Sent vote to {} for {}", leader, last_btc.block_or_tc.n());
             } else {
-                info!("Sent vote to {} for {}", leader, last_block.block.block.n);
+                info!("Sent vote to {} for {}", leader, last_btc.block_or_tc.n());
             }
         }
 
@@ -425,15 +436,15 @@ impl Staging {
     }
 
     #[async_recursion]
-    pub(super) async fn process_block_as_leader(
+    pub(super) async fn process_btc_as_leader(
         &mut self,
-        block: CachedBlock,
+        btc: BlockOrTipCut,
         storage_ack: oneshot::Receiver<StorageAck>,
         ae_stats: AppendEntriesStats,
-        this_is_final_block: bool,
+        this_is_final: bool,
     ) -> Result<(), ()> {
         if !self.view_is_stable {
-            trace!("Processing block {} as leader", block.block.n);
+            trace!("Processing block {} as leader", btc.n());
         }
         if ae_stats.view < self.view {
             // Do not accept anything from a lower view.
@@ -459,26 +470,26 @@ impl Staging {
                 // But not Unstable --> Stable; it has to be checked through QCs.
             }
             if !self.view_is_stable {
-                if !block.block.view_is_stable {
+                if !btc.view_is_stable() {
                     info!("New View message for view {}", self.view);
                 }
                 // Signal a rollback, if necessary
                 // self.pending_blocks
                 //     .retain(|e| e.block.block.n < block.block.n);
-                self.rollback(block.block.n - 1).await;
+                self.rollback(btc.n() - 1).await;
             }
             // Invariant <ViewLock>: Within the same view, the log must be append-only.
-            if !self.check_continuity(&block) {
-                warn!("Continuity broken");
-                if block.block.n == self.bci {
+            if !self.check_continuity(&btc) {
+                warn!("Continuity broken, process_btc_as_leader");
+                if btc.n() == self.bci {
                     // This is just a sanity check.
                     if self.curr_parent_for_pending.is_some()
                         && !self
                             .curr_parent_for_pending
                             .as_ref()
                             .unwrap()
-                            .block_hash
-                            .eq(&block.block_hash)
+                            .digest()
+                            .eq(&btc.digest())
                     {
                         error!("Trying to override a byz-committed block!!");
                     }
@@ -511,7 +522,7 @@ impl Staging {
                 .unwrap();
 
             // Flush the pending queue and cancel client requests.
-            self.rollback(block.block.n - 1).await;
+            self.rollback(btc.n() - 1).await;
             // let old_pending_len = self.pending_blocks.len();
             // self.pending_blocks
             //     .retain(|e| e.block.block.n < block.block.n);
@@ -526,7 +537,7 @@ impl Staging {
                 .unwrap();
 
             // None of the votes from the lower views should count anymore!
-            self.pending_blocks.iter_mut().for_each(|e| {
+            self.pending_votes.iter_mut().for_each(|e| {
                 e.replication_set.clear();
                 e.vote_sigs.clear();
             });
@@ -534,40 +545,53 @@ impl Staging {
             // Ready to accept the block normally.
             if self.i_am_leader() {
                 return self
-                    .process_block_as_leader(block, storage_ack, ae_stats, this_is_final_block)
+                    .process_btc_as_leader(btc, storage_ack, ae_stats, this_is_final)
                     .await;
             } else {
                 return self
-                    .process_block_as_follower(block, storage_ack, ae_stats, this_is_final_block)
+                    .process_btc_as_follower(btc, storage_ack, ae_stats, this_is_final)
                     .await;
             }
         }
 
-        self.perf_register_block(&block);
-        self.logserver_tx
-            .send(LogServerCommand::NewBlock(block.clone()))
-            .await
-            .unwrap();
-        self.__ae_seen_in_this_view += if this_is_final_block { 1 } else { 0 };
+        // FIXME
+        // self.perf_register_block(&block);
+        match &btc {
+            BlockOrTipCut::Block(b) => {
+                self.logserver_tx
+                    .send(LogServerCommand::NewBlock(b.clone()))
+                    .await
+                    .unwrap();
+            }
+            #[cfg(feature = "dag")]
+            BlockOrTipCut::TipCut(tc) => {
+                self.logserver_tx
+                    .send(LogServerCommand::NewTipCut(tc.clone()))
+                    .await
+                    .unwrap();
+            }
+        }
+        self.__ae_seen_in_this_view += if this_is_final { 1 } else { 0 };
 
         // Postcondition here: block.view == self.view && check_continuity() == true && i_am_leader
-        let block_view_is_stable = block.block.view_is_stable;
-        let block_view = block.block.view;
+        let block_view_is_stable = btc.view_is_stable();
+        let block_view = btc.view();
 
-        let block_with_votes = CachedBlockWithVotes {
-            block,
+        let btc_with_votes = CachedWithVotes {
+            block_or_tc: btc,
             vote_sigs: HashMap::new(),
             replication_set: HashSet::new(),
             qc_is_proposed: false,
             fast_qc_is_proposed: false,
         };
 
-        self.pending_blocks.push_back(block_with_votes);
+        self.pending_votes.push_back(btc_with_votes);
 
-        self.perf_add_event(
-            &self.pending_blocks.iter().last().unwrap().block,
-            "Push to Pending",
-        );
+        // FIXME
+        // self.perf_add_event(
+        //     &self.pending_votes.iter().last().unwrap().block,
+        //     "Push to Pending",
+        // );
 
         // Now vote for self
 
@@ -579,8 +603,8 @@ impl Staging {
         //     return Ok(());
         // }
 
-        if this_is_final_block {
-            self.vote_on_last_block_for_self(storage_ack).await?;
+        if this_is_final {
+            self.vote_on_last_btc_for_self(storage_ack).await?;
         } else {
             self.__storage_ack_buffer.push_back(storage_ack);
         }
@@ -590,15 +614,16 @@ impl Staging {
 
     /// This has a lot of similarities with process_block_as_leader.
     #[async_recursion]
-    pub(super) async fn process_block_as_follower(
+    pub(super) async fn process_btc_as_follower(
         &mut self,
-        block: CachedBlock,
+        // block: CachedBlock,
+        btc: BlockOrTipCut,
         storage_ack: oneshot::Receiver<StorageAck>,
         ae_stats: AppendEntriesStats,
-        this_is_final_block: bool,
+        this_is_final: bool,
     ) -> Result<(), ()> {
         if !self.view_is_stable {
-            trace!("Processing block {} as follower", block.block.n);
+            trace!("Processing block {} as follower", btc.n());
         }
         if ae_stats.view < self.view {
             // Do not accept anything from a lower view.
@@ -628,18 +653,18 @@ impl Staging {
                 // But not Unstable --> Stable; it has to be checked through QCs.
             }
             if !self.view_is_stable {
-                if !block.block.view_is_stable {
+                if !btc.view_is_stable() {
                     info!("New View message for view {}", self.view);
                 }
                 // Signal a rollback, if necessary
-                self.rollback(block.block.n - 1).await;
+                self.rollback(btc.n() - 1).await;
                 // self.pending_blocks
                 //     .retain(|e| e.block.block.n < block.block.n);
             }
 
             // Invariant <ViewLock>: Within the same view, the log must be append-only.
-            if !self.check_continuity(&block) {
-                warn!("Continuity broken");
+            if !self.check_continuity(&btc) {
+                warn!("Continuity broken, process_btc_as_follower");
                 return Ok(());
             }
         } else {
@@ -652,7 +677,7 @@ impl Staging {
             self.__ae_seen_in_this_view = 0;
 
             self.view_is_stable = false;
-            self.config_num = block.block.config_num;
+            self.config_num = btc.config_num();
 
             // Notify upstream stages of view change
             self.block_sequencer_command_tx
@@ -668,16 +693,15 @@ impl Staging {
                 .unwrap();
 
             // Flush the pending queue and cancel client requests.
-            self.pending_blocks
-                .retain(|e| e.block.block.n < block.block.n);
-            self.pending_signatures.retain(|(n, _)| *n < block.block.n);
+            self.pending_votes.retain(|e| e.block_or_tc.n() < btc.n());
+            self.pending_signatures.retain(|(n, _)| *n < btc.n());
             self.client_reply_tx
                 .send(ClientReplyCommand::CancelAllRequests)
                 .await
                 .unwrap();
 
             // None of the votes from the lower views should count anymore!
-            self.pending_blocks.iter_mut().for_each(|e| {
+            self.pending_votes.iter_mut().for_each(|e| {
                 e.replication_set.clear();
                 e.vote_sigs.clear();
             });
@@ -685,46 +709,56 @@ impl Staging {
             // Ready to accept the block normally.
             if self.i_am_leader() {
                 return self
-                    .process_block_as_leader(block, storage_ack, ae_stats, this_is_final_block)
+                    .process_btc_as_leader(btc, storage_ack, ae_stats, this_is_final)
                     .await;
             } else {
                 return self
-                    .process_block_as_follower(block, storage_ack, ae_stats, this_is_final_block)
+                    .process_btc_as_follower(btc, storage_ack, ae_stats, this_is_final)
                     .await;
             }
         }
 
-        self.logserver_tx
-            .send(LogServerCommand::NewBlock(block.clone()))
-            .await
-            .unwrap();
-        self.__ae_seen_in_this_view += if this_is_final_block { 1 } else { 0 };
+        match &btc {
+            BlockOrTipCut::Block(block) => {
+                self.logserver_tx
+                    .send(LogServerCommand::NewBlock(block.clone()))
+                    .await
+                    .unwrap();
+            }
+            #[cfg(feature = "dag")]
+            BlockOrTipCut::TipCut(tc) => {
+                self.logserver_tx
+                    .send(LogServerCommand::NewTipCut(tc.clone()))
+                    .await
+                    .unwrap();
+            }
+        }
+        self.__ae_seen_in_this_view += if this_is_final { 1 } else { 0 };
 
         // Postcondition here: block.view == self.view && check_continuity() == true && !i_am_leader
-        let block_with_votes = CachedBlockWithVotes {
-            block,
+        let btc_with_votes = CachedWithVotes {
+            block_or_tc: btc,
             vote_sigs: HashMap::new(),
             replication_set: HashSet::new(),
             qc_is_proposed: false,
             fast_qc_is_proposed: false,
         };
-        self.pending_blocks.push_back(block_with_votes);
+        self.pending_votes.push_back(btc_with_votes);
 
         // Now crash commit blindly
-        if this_is_final_block {
+        if this_is_final {
             self.do_crash_commit(self.ci, ae_stats.ci).await;
         }
 
         let old_view_is_stable = self.view_is_stable;
 
         let mut qc_list = self
-            .pending_blocks
+            .pending_votes
             .iter()
             .last()
             .unwrap()
-            .block
-            .block
-            .qc
+            .block_or_tc
+            .qc()
             .iter()
             .map(|e| e.clone())
             .collect::<Vec<_>>();
@@ -741,14 +775,14 @@ impl Staging {
 
         #[cfg(feature = "no_qc")]
         {
-            if this_is_final_block {
+            if this_is_final {
                 self.do_byzantine_commit(self.bci, self.ci).await;
             }
         }
 
         // Reply vote to the leader.
-        if this_is_final_block {
-            self.send_vote_on_last_block_to_leader(storage_ack).await?;
+        if this_is_final {
+            self.send_vote_on_last_btc_to_leader(storage_ack).await?;
         } else {
             self.__storage_ack_buffer.push_back(storage_ack);
         }
@@ -783,19 +817,19 @@ impl Staging {
         let mut verify_futs = Vec::new();
         for sig in &vote.sig_array {
             let found_block = self
-                .pending_blocks
-                .binary_search_by(|b| b.block.block.n.cmp(&sig.n));
+                .pending_votes
+                .binary_search_by(|b| b.block_or_tc.n().cmp(&sig.n));
 
             match found_block {
                 Ok(idx) => {
-                    let block = &self.pending_blocks[idx];
+                    let block = &self.pending_votes[idx];
                     let _sig = sig.sig.clone().try_into();
                     match _sig {
                         Ok(_sig) => {
                             verify_futs.push(
                                 self.crypto
                                     .verify_nonblocking(
-                                        block.block.block_hash.clone(),
+                                        block.block_or_tc.digest().clone(),
                                         sender.clone(),
                                         _sig,
                                     )
@@ -836,26 +870,26 @@ impl Staging {
             return Ok(());
         }
 
-        if self.pending_blocks.len() == 0 {
+        if self.pending_votes.len() == 0 {
             return Ok(());
         }
 
-        let first_n = self.pending_blocks.front().unwrap().block.block.n;
-        let last_n = self.pending_blocks.back().unwrap().block.block.n;
+        let first_n = self.pending_votes.front().unwrap().block_or_tc.n();
+        let last_n = self.pending_votes.back().unwrap().block_or_tc.n();
 
         if !(first_n <= vote.n && vote.n <= last_n) {
             return Ok(());
         }
         // Vote for a block is a vote on all its ancestors.
-        for block in self.pending_blocks.iter_mut() {
-            if block.block.block.n <= vote.n {
+        for block in self.pending_votes.iter_mut() {
+            if block.block_or_tc.n() <= vote.n {
                 block.replication_set.insert(sender.clone());
             }
 
-            if let Some(Sig::ProposerSig(_)) = block.block.block.sig {
+            if let Some(_) = block.block_or_tc.sig() {
                 // If this block is signed, the sig array may have a signature for it.
                 vote.sig_array.retain(|e| {
-                    if e.n != block.block.block.n {
+                    if e.n != block.block_or_tc.n() {
                         true
                     } else {
                         block.vote_sigs.insert(sender.clone(), e.clone());
@@ -889,27 +923,107 @@ impl Staging {
             .await
             .unwrap();
 
-        let blocks = self
-            .pending_blocks
-            .iter()
-            .filter(|e| e.block.block.n > old_ci && e.block.block.n <= new_ci)
-            .map(|e| e.block.clone())
-            .collect::<Vec<_>>();
+        // TODO: Also update dag_block_broadcaster here if dag feature is enabled.
+        // Should the CI be per-lane??
 
-        #[cfg(feature = "perf")]
-        let mut block_perf_stats = Vec::new();
-        #[cfg(feature = "perf")]
-        for b in &blocks {
-            block_perf_stats.push(self.perf_add_event(&b, "Crash Commit"));
-        }
-        self.app_tx
-            .send(AppCommand::CrashCommit(blocks))
-            .await
-            .unwrap();
+        #[cfg(not(feature = "dag"))]
+        let blocks = {
+            let committed_blocks = self
+                .pending_votes
+                .iter()
+                .filter(|e| e.block_or_tc.n() > old_ci && e.block_or_tc.n() <= new_ci)
+                .map(|e| match &e.block_or_tc {
+                    BlockOrTipCut::Block(b) => b.clone(),
+                    _ => {
+                        unreachable!("Found committed tip cut during crash commit");
+                    }
+                })
+                .collect::<Vec<_>>();
 
-        #[cfg(feature = "perf")]
-        for (signed, block_n) in block_perf_stats {
-            self.perf_add_event_from_perf_stats(signed, block_n, "Send Crash Commit to App");
+            self.app_tx
+                .send(AppCommand::CrashCommit(committed_blocks.clone()))
+                .await
+                .unwrap();
+
+            committed_blocks
+        };
+
+        #[cfg(feature = "dag")]
+        {
+            // Collect committed tip cuts for [old_ci+1, new_ci] along with cached digests
+            let tipcuts: Vec<CachedTipCut> = self
+                .pending_votes
+                .iter()
+                .filter(|entry| entry.block_or_tc.n() > old_ci && entry.block_or_tc.n() <= new_ci)
+                .filter_map(|entry| match &entry.block_or_tc {
+                    BlockOrTipCut::TipCut(tc) => Some(tc.clone()),
+                    _ => None,
+                })
+                .collect();
+
+            let mut new_last_qc = 0;
+
+            for tipcut in tipcuts {
+                match self.dag_fetch_and_sort_tipcut(&tipcut.tipcut.clone()).await {
+                    Ok((sorted_blocks, origin_map)) => {
+                        debug!("[DAG STAGING] crash_commit_sort_ok: tipcut_digest={} blocks={} origins={}", hex::encode(&tipcut.tipcut_hash), sorted_blocks.len(), origin_map.len());
+                        // cache batch for reuse
+                        self.dag_append_exec_batch(
+                            tipcut.clone(),
+                            sorted_blocks.clone(),
+                            origin_map,
+                        );
+
+                        // Update per-lane last committed sequence
+                        for car in &tipcut.tipcut.tips {
+                            self.last_lane_seq.insert(car.origin_node.clone(), car.n);
+                        }
+
+                        // Update new_last_qc
+                        for qc in &tipcut.tipcut.qc {
+                            if qc.n > new_last_qc {
+                                new_last_qc = qc.n;
+                            }
+                        }
+                    }
+                    Err(e) => {
+                        // FIXME: We can get caught in a loop here if we get blocked fetching a missing block.
+                        // I have a potential fix stashed locally, but I can't replicate the issue easily to test right now.
+                        // For now, just log and skip.
+                        warn!("DAG crash-commit: failed to fetch/sort tip cut: {:?}", e);
+                    }
+                }
+            }
+
+            // Build payload from cache up to new_ci (preserving tipcut boundaries)
+            let (committed_blocks, origin_map_total) =
+                self.dag_build_payload_from_cache(old_ci, new_ci);
+            debug!(
+                "[DAG STAGING] crash_commit_send: blocks={} origins={}",
+                committed_blocks.len(),
+                origin_map_total.len()
+            );
+            let _ = self
+                .app_tx
+                .send(AppCommand::CrashCommitWithOrigins(
+                    new_ci,
+                    new_last_qc,
+                    committed_blocks.clone(),
+                    origin_map_total,
+                ))
+                .await;
+            // No return; DAG perf handled separately below
+        };
+
+        #[cfg(all(feature = "perf", not(feature = "dag")))]
+        {
+            let mut block_perf_stats = Vec::new();
+            for b in &blocks {
+                block_perf_stats.push(self.perf_add_event(&b, "Crash Commit"));
+            }
+            for (signed, block_n) in block_perf_stats {
+                self.perf_add_event_from_perf_stats(signed, block_n, "Send Crash Commit to App");
+            }
         }
     }
 
@@ -932,13 +1046,13 @@ impl Staging {
             self.crash_commit_threshold()
         };
 
-        for block in self.pending_blocks.iter() {
-            if block.block.block.n <= self.ci {
+        for entry in self.pending_votes.iter() {
+            if entry.block_or_tc.n() <= self.ci {
                 continue;
             }
 
-            if block.replication_set.len() >= thresh {
-                self.ci = block.block.block.n;
+            if entry.replication_set.len() >= thresh {
+                self.ci = entry.block_or_tc.n();
             }
         }
         let new_ci = self.ci;
@@ -953,8 +1067,8 @@ impl Staging {
 
         let thresh = self.byzantine_commit_threshold();
         let fast_thresh = self.byzantine_fast_path_threshold();
-        for block in &mut self.pending_blocks {
-            if block.qc_is_proposed && block.fast_qc_is_proposed {
+        for entry in &mut self.pending_votes {
+            if entry.qc_is_proposed && entry.fast_qc_is_proposed {
                 continue;
             }
 
@@ -964,17 +1078,17 @@ impl Staging {
             // If we already have proposed a slow path QC,
             // there is no need to propose another until we can safely do the fast path.
 
-            let thresh = if block.qc_is_proposed {
+            let thresh = if entry.qc_is_proposed {
                 fast_thresh
             } else {
                 thresh
             };
 
-            if block.vote_sigs.len() >= thresh {
+            if entry.vote_sigs.len() >= thresh {
                 let qc = ProtoQuorumCertificate {
-                    n: block.block.block.n,
+                    n: entry.block_or_tc.n(),
                     view: self.view,
-                    sig: block
+                    sig: entry
                         .vote_sigs
                         .iter()
                         .map(|(k, v)| ProtoNameWithSignature {
@@ -982,13 +1096,13 @@ impl Staging {
                             sig: v.sig.clone(),
                         })
                         .collect(),
-                    digest: block.block.block_hash.clone(),
+                    digest: entry.block_or_tc.digest(),
                 };
                 qcs.push(qc);
-                block.qc_is_proposed = true;
+                entry.qc_is_proposed = true;
 
-                if block.vote_sigs.len() >= fast_thresh {
-                    block.fast_qc_is_proposed = true;
+                if entry.vote_sigs.len() >= fast_thresh {
+                    entry.fast_qc_is_proposed = true;
                 }
             }
         }
@@ -1056,11 +1170,11 @@ impl Staging {
 
         // Slow path: 2-hop rule
         let mut new_bci_slow_path = self
-            .pending_blocks
+            .pending_votes
             .iter()
             .rev()
-            .filter(|b| b.block.block.n <= incoming_qc.n) // The blocks pointed by this QC (and all its ancestors)
-            .map(|b| b.block.block.qc.iter().map(|qc| qc.n)) // Collect all the QCs in those blocks
+            .filter(|b| b.block_or_tc.n() <= incoming_qc.n) // The blocks pointed by this QC (and all its ancestors)
+            .map(|b| b.block_or_tc.qc().iter().map(|qc| qc.n).collect::<Vec<_>>()) // Collect all the QCs in those blocks
             .flatten()
             .max()
             .unwrap_or(old_bci); // All such qc.n must be byz committed, so new_bci = max(all such qc.n)
@@ -1101,27 +1215,68 @@ impl Staging {
         // Invariant: All blocks in pending_blocks is in order.
         let mut byz_blocks = Vec::new();
 
-        while let Some(block) = self.pending_blocks.front() {
-            if block.block.block.n > new_bci {
+        while let Some(entry) = self.pending_votes.front() {
+            if entry.block_or_tc.n() > new_bci {
                 break;
             }
 
-            let block = self.pending_blocks.pop_front().unwrap().block;
-            self.perf_add_event(&block, "Byz Commit");
+            let btc = self.pending_votes.pop_front().unwrap().block_or_tc;
+            // FIXME
+            // self.perf_add_event(&btc, "Byz Commit");
 
-            if block.block.n == new_bci {
-                self.curr_parent_for_pending = Some(block.clone());
+            if btc.n() == new_bci {
+                self.curr_parent_for_pending = Some(btc.clone());
             }
 
-            self.perf_deregister_block(&block);
-            byz_blocks.push(block);
+            // FIXME
+            // self.perf_deregister_block(&btc);
+            byz_blocks.push(btc);
         }
 
-        let _ = self.app_tx.send(AppCommand::ByzCommit(byz_blocks)).await;
+        // Execute committed entries
+        #[cfg(not(feature = "dag"))]
+        {
+            // In non-DAG mode, byz_blocks should all be Blocks; filter and send
+            let blocks: Vec<CachedBlock> = byz_blocks
+                .into_iter()
+                .filter_map(|btc| match btc {
+                    BlockOrTipCut::Block(b) => Some(b),
+                    _ => None,
+                })
+                .collect();
+            let _ = self.app_tx.send(AppCommand::ByzCommit(blocks)).await;
+        }
+
+        #[cfg(feature = "dag")]
+        {
+            // Reuse cached exec batches; build payload for [old_bci, new_bci]
+            let (blocks_for_app, origin_map_total) =
+                self.dag_build_payload_from_cache(old_bci, new_bci);
+            debug!(
+                "[DAG STAGING] byz_commit_send: old_bci={} new_bci={} blocks={} origins={}",
+                old_bci,
+                new_bci,
+                blocks_for_app.len(),
+                origin_map_total.len()
+            );
+
+            let _ = self
+                .app_tx
+                .send(AppCommand::ByzCommitWithOrigins(
+                    new_bci,
+                    blocks_for_app,
+                    origin_map_total,
+                ))
+                .await;
+        }
         let _ = self
             .logserver_tx
             .send(LogServerCommand::UpdateBCI(self.bci))
             .await;
+
+        // GC exec batches cache
+        #[cfg(feature = "dag")]
+        self.dag_gc_exec_batches_up_to(self.bci);
     }
 
     fn maybe_update_last_qc(&mut self, qc: &ProtoQuorumCertificate) {
@@ -1131,7 +1286,7 @@ impl Staging {
     }
 
     async fn rollback(&mut self, n: u64) {
-        self.pending_blocks.retain(|e| e.block.block.n <= n);
+        self.pending_votes.retain(|e| e.block_or_tc.n() <= n);
         self.pending_signatures.retain(|(_n, _)| *_n <= n);
         self.app_tx.send(AppCommand::Rollback(n)).await.unwrap();
         self.logserver_tx

@@ -127,9 +127,12 @@ impl BufferedTlsStream {
             if self.bound == self.offset {
                 // Need to fetch more data.
                 let read_n = self.stream_rx.read(self.buffer.as_mut()).await?;
-                debug!(
+                trace!(
                     "Fetched {} bytes, Need to fetch {} bytes, pos {}, Currently at: {}",
-                    read_n, get_n, pos, n
+                    read_n,
+                    get_n,
+                    pos,
+                    n
                 );
                 self.bound = read_n;
                 self.offset = 0;
@@ -329,8 +332,8 @@ impl PinnedClient {
         name: &String,
     ) -> Result<(PinnedTlsStream, Option<PinnedTlsStream>), Error> {
         let cfg = client.0.config.get();
-        debug!("(Re)establishing connection to: {}", name);
-        debug!("Node list: {:?}", cfg.net_config.nodes);
+        trace!("(Re)establishing connection to: {}", name);
+        trace!("Node list: {:?}", cfg.net_config.nodes);
         let peer = cfg
             .net_config
             .nodes
@@ -463,7 +466,7 @@ impl PinnedClient {
             }
 
             client.0.sock_map.0.write().await.remove(name);
-            debug!("Socket removed from sock_map");
+            trace!("Socket removed from sock_map");
             return Err(e);
         }
 
@@ -529,7 +532,7 @@ impl PinnedClient {
         Self::send_raw(client, name, &sock, SendDataType::ByteType(data)).await?;
         let send_time = send_time.elapsed().as_micros();
 
-        debug!(
+        trace!(
             "Send time: sz:{}, data: {}, total: {} us",
             send_sz_time,
             send_time - send_sz_time,
@@ -665,7 +668,7 @@ impl PinnedClient {
                     let s = match Self::get_sock(&_client, &_name, false).await {
                         Ok(s) => s,
                         Err(e) => {
-                            debug!("Broadcast worker dying for {}: {}", _name, e);
+                            trace!("Broadcast worker dying for {}: {}", _name, e);
                             continue;
                         }
                     };
@@ -855,7 +858,7 @@ impl PinnedClient {
                     let s = match Self::get_sock(&_client, &_name, false).await {
                         Ok(s) => s,
                         Err(e) => {
-                            debug!("Broadcast worker dying for {}: {}", _name, e);
+                            trace!("Broadcast worker dying for {}: {}", _name, e);
                             continue;
                         }
                     };
